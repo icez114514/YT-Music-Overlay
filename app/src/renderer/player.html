@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YT Music Overlay</title>
+    <link rel="stylesheet" href="./player.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="brand">
+        <span class="mark"></span>
+        <div>
+          <strong>YT Music Overlay</strong>
+          <small id="statusText">Waiting for YouTube Music...</small>
+        </div>
+      </div>
+      <nav>
+        <button id="backButton" class="icon-nav" title="Back" type="button">&#8249;</button>
+        <button id="forwardButton" class="icon-nav" title="Forward" type="button">&#8250;</button>
+        <button id="reloadButton" class="icon-nav" title="Reload" type="button">&#8635;</button>
+        <label class="overlay-switch" title="Toggle overlay">
+          <input id="overlayToggle" type="checkbox" checked />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-label">Overlay</span>
+        </label>
+      </nav>
+    </header>
+    <script src="./player.js"></script>
+  </body>
+</html>

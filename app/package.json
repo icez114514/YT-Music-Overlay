@@ -1,0 +1,46 @@
+{
+  "name": "yt-music-overlay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop overlay for YouTube Music synced lyrics.",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc && powershell -NoProfile -ExecutionPolicy Bypass -Command \"Copy-Item -Force src/renderer/*.html,src/renderer/*.css dist/renderer\"",
+    "pack:portable": "npm run build && electron-builder --win portable zip",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron ."
+  },
+  "build": {
+    "appId": "local.yt-music-overlay",
+    "productName": "YT Music Overlay",
+    "asar": true,
+    "asarUnpack": [
+      "extensions/**"
+    ],
+    "files": [
+      "dist/**/*",
+      "extensions/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "portable",
+        "zip"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.8.3"
+  }
+}

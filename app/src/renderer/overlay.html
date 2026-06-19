@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lyrics Overlay</title>
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body>
+    <section id="overlay" class="overlay">
+      <div class="drag-strip">
+        <div class="track">
+          <span id="trackTitle">YT Music Overlay</span>
+          <small id="trackArtist">Waiting for playback</small>
+        </div>
+        <div class="controls">
+          <button id="compactToggle" class="icon-button compact-button" title="Compact mode" type="button" aria-label="Compact mode">
+            <span class="compact-icon" aria-hidden="true"></span>
+          </button>
+          <button id="settingsToggle" class="icon-button" title="Settings" type="button" aria-label="Settings">&#9881;</button>
+        </div>
+      </div>
+
+      <div id="lyrics" class="lyrics">
+        <p class="message">Waiting for YouTube Music...</p>
+      </div>
+    </section>
+    <script src="./overlay.js"></script>
+  </body>
+</html>
