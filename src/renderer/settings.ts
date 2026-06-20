@@ -19,6 +19,7 @@ interface OverlaySettings {
   showAdjacentLines: boolean;
   compactMode: boolean;
   hideBackgroundUntilHover: boolean;
+  useChineseInterface: boolean;
 }
 
 const fallbackSettingsForPanel: OverlaySettings = {
@@ -41,7 +42,8 @@ const fallbackSettingsForPanel: OverlaySettings = {
   locked: false,
   showAdjacentLines: true,
   compactMode: false,
-  hideBackgroundUntilHover: false
+  hideBackgroundUntilHover: false,
+  useChineseInterface: false
 };
 
 let panelSettings: OverlaySettings = { ...fallbackSettingsForPanel };
@@ -66,6 +68,75 @@ const adjacentInput = document.querySelector<HTMLInputElement>("#adjacentInput")
 const lockedInput = document.querySelector<HTMLInputElement>("#lockedInput");
 const clickInput = document.querySelector<HTMLInputElement>("#clickInput");
 const hoverBackgroundInput = document.querySelector<HTMLInputElement>("#hoverBackgroundInput");
+const chineseInterfaceInput = document.querySelector<HTMLInputElement>("#chineseInterfaceInput");
+
+const translations = {
+  en: {
+    settingsTitle: "Overlay Settings",
+    close: "Close",
+    textColor: "Text color",
+    inactiveTextColor: "Inactive text",
+    backgroundColor: "Background",
+    accentColor: "Accent",
+    borderColor: "Border",
+    opacity: "Opacity",
+    fontSize: "Font size",
+    adjacentScale: "Adjacent scale",
+    blur: "Blur",
+    shadow: "Shadow",
+    radius: "Radius",
+    lineGap: "Line gap",
+    verticalPadding: "Vertical padding",
+    horizontalPadding: "Horizontal padding",
+    showAdjacent: "Show adjacent lines",
+    lockSize: "Lock size",
+    clickThrough: "Click through",
+    hoverBackground: "Show background on hover",
+    chineseInterface: "中文介面"
+  },
+  zh: {
+    settingsTitle: "Overlay 設定",
+    close: "關閉",
+    textColor: "文字顏色",
+    inactiveTextColor: "非當前歌詞顏色",
+    backgroundColor: "背景顏色",
+    accentColor: "重點色",
+    borderColor: "邊框顏色",
+    opacity: "透明度",
+    fontSize: "字體大小",
+    adjacentScale: "上下句縮放",
+    blur: "背景模糊",
+    shadow: "文字陰影",
+    radius: "圓角",
+    lineGap: "歌詞間距",
+    verticalPadding: "垂直內距",
+    horizontalPadding: "水平內距",
+    showAdjacent: "顯示上下句歌詞",
+    lockSize: "鎖定大小",
+    clickThrough: "點擊穿透",
+    hoverBackground: "滑鼠移上時顯示背景",
+    chineseInterface: "中文介面"
+  }
+} as const;
+
+type TranslationKey = keyof typeof translations.en;
+
+function applyLanguageToPanel(): void {
+  const dictionary = panelSettings.useChineseInterface ? translations.zh : translations.en;
+  document.documentElement.lang = panelSettings.useChineseInterface ? "zh-Hant" : "en";
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => {
+    const key = element.dataset.i18n as TranslationKey | undefined;
+    if (key && dictionary[key]) {
+      element.textContent = dictionary[key];
+    }
+  });
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((element) => {
+    const key = element.dataset.i18nTitle as TranslationKey | undefined;
+    if (key && dictionary[key]) {
+      element.title = dictionary[key];
+    }
+  });
+}
 
 function hexToRgbTripletForPanel(hex: string): string {
   const normalized = /^#[0-9a-f]{6}$/i.test(hex) ? hex : fallbackSettingsForPanel.backgroundColor;
@@ -99,6 +170,8 @@ function applySettingsToPanel(next: Partial<OverlaySettings>): void {
   if (lockedInput) lockedInput.checked = panelSettings.locked;
   if (clickInput) clickInput.checked = panelSettings.clickThrough;
   if (hoverBackgroundInput) hoverBackgroundInput.checked = panelSettings.hideBackgroundUntilHover;
+  if (chineseInterfaceInput) chineseInterfaceInput.checked = panelSettings.useChineseInterface;
+  applyLanguageToPanel();
 }
 
 function pushPanelSettings(): void {
@@ -121,7 +194,8 @@ function pushPanelSettings(): void {
     showAdjacentLines: Boolean(adjacentInput?.checked),
     locked: Boolean(lockedInput?.checked),
     clickThrough: Boolean(clickInput?.checked),
-    hideBackgroundUntilHover: Boolean(hoverBackgroundInput?.checked)
+    hideBackgroundUntilHover: Boolean(hoverBackgroundInput?.checked),
+    useChineseInterface: Boolean(chineseInterfaceInput?.checked)
   };
 
   applySettingsToPanel(next);
@@ -146,7 +220,8 @@ for (const input of [
   adjacentInput,
   lockedInput,
   clickInput,
-  hoverBackgroundInput
+  hoverBackgroundInput,
+  chineseInterfaceInput
 ]) {
   input?.addEventListener("input", pushPanelSettings);
   input?.addEventListener("change", pushPanelSettings);

@@ -18,6 +18,8 @@ export interface LyricsPayload {
   artist: string;
   album?: string;
   isPlaying: boolean;
+  volume: number;
+  muted: boolean;
   lines: LyricLine[];
   activeIndex: number;
   message: string;
@@ -45,6 +47,7 @@ export interface OverlaySettings {
   showAdjacentLines: boolean;
   compactMode: boolean;
   hideBackgroundUntilHover: boolean;
+  useChineseInterface: boolean;
 }
 
 export interface OverlayBounds {
@@ -80,7 +83,8 @@ export const defaultSettings: OverlaySettings = {
   locked: false,
   showAdjacentLines: true,
   compactMode: false,
-  hideBackgroundUntilHover: false
+  hideBackgroundUntilHover: false,
+  useChineseInterface: false
 };
 
 export const defaultLyricsPayload: LyricsPayload = {
@@ -89,6 +93,8 @@ export const defaultLyricsPayload: LyricsPayload = {
   artist: "",
   album: "",
   isPlaying: false,
+  volume: 0.8,
+  muted: false,
   lines: [],
   activeIndex: -1,
   message: "Waiting for YouTube Music...",

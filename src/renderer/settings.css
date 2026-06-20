@@ -58,8 +58,8 @@ body {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(132px, 1fr));
-  gap: 10px 14px;
+  grid-template-columns: repeat(3, minmax(126px, 1fr));
+  gap: 9px 12px;
 }
 
 label {
@@ -84,9 +84,9 @@ input[type="color"] {
 }
 
 .checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
   margin-top: 12px;
 }
 
@@ -94,4 +94,8 @@ input[type="color"] {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.wide-check {
+  grid-column: 1 / -1;
 }

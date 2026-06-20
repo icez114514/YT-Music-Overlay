@@ -1,4 +1,6 @@
-import { app, BrowserView, BrowserWindow, ipcMain, nativeTheme, screen, session, shell } from "electron";
+import { app, BrowserView, BrowserWindow, dialog, ipcMain, nativeTheme, screen, session, shell } from "electron";
+import type { MessageBoxOptions } from "electron";
+import { get } from "node:https";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -35,7 +37,9 @@ const appAssetPath = (...parts: string[]) =>
 const betterLyricsPath = () => appAssetPath("extensions", "better-lyrics");
 const normalOverlayMinSize = { width: 420, height: 120 };
 const compactOverlayMinSize = { width: 180, height: 48 };
-const settingsPanelSize = { width: 390, height: 520 };
+const settingsPanelSize = { width: 560, height: 430 };
+const updateReleaseApiUrl = "https://api.github.com/repos/icez114514/YT-Music-Overlay/releases/latest";
+const updateReleasePageUrl = "https://github.com/icez114514/YT-Music-Overlay/releases/latest";
 
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
 app.commandLine.appendSwitch("disable-background-networking");
@@ -82,6 +86,309 @@ function createPlayerWindow(): void {
     musicView = null;
     playerWindow = null;
   });
+}
+
+function compareVersions(current: string, latest: string): number {
+  const normalize = (value: string) =>
+    value
+      .replace(/^v/i, "")
+      .split(".")
+      .map((part) => Number.parseInt(part.replace(/\D.*/, ""), 10) || 0);
+  const currentParts = normalize(current);
+  const latestParts = normalize(latest);
+  const length = Math.max(currentParts.length, latestParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const currentPart = currentParts[index] ?? 0;
+    const latestPart = latestParts[index] ?? 0;
+    if (latestPart > currentPart) return 1;
+    if (latestPart < currentPart) return -1;
+  }
+  return 0;
+}
+
+function fetchLatestRelease(): Promise<{ tag_name?: string; html_url?: string; name?: string }> {
+  return new Promise((resolve, reject) => {
+    const request = get(
+      updateReleaseApiUrl,
+      {
+        headers: {
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "YT-Music-Overlay"
+        },
+        timeout: 8000
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+          if (body.length > 1024 * 1024) {
+            request.destroy(new Error("Release response is too large."));
+          }
+        });
+        response.on("end", () => {
+          if ((response.statusCode ?? 500) >= 400) {
+            reject(new Error(`GitHub release check failed with HTTP ${response.statusCode}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body) as { tag_name?: string; html_url?: string; name?: string });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+    );
+    request.on("timeout", () => request.destroy(new Error("Release check timed out.")));
+    request.on("error", reject);
+  });
+}
+
+async function checkForUpdates(): Promise<void> {
+  try {
+    const latest = await fetchLatestRelease();
+    const latestTag = latest.tag_name ?? latest.name ?? "";
+    if (!latestTag || compareVersions(app.getVersion(), latestTag) <= 0) {
+      return;
+    }
+
+    const useChinese = state.settings.useChineseInterface;
+    const messageBoxOptions: MessageBoxOptions = {
+      type: "info",
+      buttons: useChinese ? ["開啟下載頁", "稍後"] : ["Open download page", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: useChinese ? "發現新版本" : "Update available",
+      message: useChinese
+        ? `發現新版本 ${latestTag}`
+        : `A new version ${latestTag} is available.`,
+      detail: useChinese
+        ? `目前版本：${app.getVersion()}\n此免安裝版會開啟 GitHub Release 頁面讓你下載新版。`
+        : `Current version: ${app.getVersion()}\nThis portable build opens the GitHub Release page so you can download the new version.`
+    };
+    const response = playerWindow
+      ? await dialog.showMessageBox(playerWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+
+    if (response.response === 0) {
+      await shell.openExternal(latest.html_url ?? updateReleasePageUrl);
+    }
+  } catch (error) {
+    playerWindow?.webContents.send(
+      "player:status",
+      `Update check skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+function musicControlScript(command: string, value?: number): string {
+  return `
+    (() => {
+      const clickFirst = (selectors) => {
+        for (const selector of selectors) {
+          const element = document.querySelector(selector);
+          if (element && typeof element.click === "function") {
+            element.click();
+            return true;
+          }
+        }
+        return false;
+      };
+      const command = ${JSON.stringify(command)};
+      if (command === "previous") {
+        return clickFirst(["ytmusic-player-bar .previous-button", "ytmusic-player-bar [title='Previous']", "ytmusic-player-bar [aria-label*='Previous' i]"]);
+      }
+      if (command === "play-pause") {
+        return clickFirst(["ytmusic-player-bar .play-pause-button", "ytmusic-player-bar [title='Play']", "ytmusic-player-bar [title='Pause']", "ytmusic-player-bar [aria-label*='Play' i]", "ytmusic-player-bar [aria-label*='Pause' i]"]);
+      }
+      if (command === "next") {
+        return clickFirst(["ytmusic-player-bar .next-button", "ytmusic-player-bar [title='Next']", "ytmusic-player-bar [aria-label*='Next' i]"]);
+      }
+      if (command === "volume") {
+        const volume = Math.max(0, Math.min(1, Number(${JSON.stringify(value ?? 0.8)})));
+        const slider = document.querySelector("ytmusic-player-bar tp-yt-paper-slider#volume-slider, ytmusic-player-bar #volume-slider, ytmusic-player-bar tp-yt-paper-slider");
+        if (slider) {
+          const sliderValue = Math.round(volume * 100);
+          slider.value = sliderValue;
+          slider.immediateValue = sliderValue;
+          slider.setAttribute("value", String(sliderValue));
+          slider.setAttribute("aria-valuenow", String(sliderValue));
+          slider.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          slider.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        }
+        const muteButton = document.querySelector("ytmusic-player-bar .volume button, ytmusic-player-bar [aria-label*='Mute' i], ytmusic-player-bar [aria-label*='Unmute' i]");
+        for (const media of Array.from(document.querySelectorAll("video, audio"))) {
+          media.volume = volume;
+          media.muted = volume === 0;
+          media.dispatchEvent(new Event("volumechange", { bubbles: true }));
+        }
+        if (muteButton) {
+          const label = ((muteButton.getAttribute("aria-label") || "") + " " + (muteButton.getAttribute("title") || "")).toLowerCase();
+          const wantsMuted = volume === 0;
+          const appearsMuted = label.includes("unmute");
+          if (wantsMuted !== appearsMuted && typeof muteButton.click === "function") {
+            muteButton.click();
+          }
+        }
+        return true;
+      }
+      return false;
+    })();
+  `;
+}
+
+async function sendMusicControl(command: string, value?: number): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
+    return;
+  }
+  await view.webContents.executeJavaScript(musicControlScript(command, value), true);
+  if (command === "play-pause") {
+    setTimeout(() => {
+      expandPlayerForLyricsIfNeeded().catch((error) => {
+        playerWindow?.webContents.send(
+          "player:status",
+          `Player page expand check failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    }, 450);
+  }
+}
+
+function playerBarClickProbeScript(): string {
+  return `
+    (() => {
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const candidates = [
+        "ytmusic-player-bar yt-icon-button.toggle-player-page-button",
+        "ytmusic-player-bar .toggle-player-page-button button",
+        "ytmusic-player-bar button[aria-label*='開啟播放器頁面']",
+        "ytmusic-player-bar button[aria-label*='打开播放器页面']",
+        "ytmusic-player-bar button[aria-label*='Open player page' i]"
+      ];
+      for (const selector of candidates) {
+        const element = document.querySelector(selector);
+        if (visible(element)) {
+          const label = clean((element.getAttribute("title") || "") + " " + (element.getAttribute("aria-label") || ""));
+          if (/close|collapse|hide|關閉|关闭|收合/i.test(label)) return { x: -1, y: -1 };
+          const rect = element.getBoundingClientRect();
+          return {
+            x: Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2)),
+            y: Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2))
+          };
+        }
+      }
+      const bar = document.querySelector("ytmusic-player-bar");
+      if (!bar) return null;
+      const rect = bar.getBoundingClientRect();
+      return {
+        x: Math.max(1, Math.min(window.innerWidth - 2, rect.right - 18)),
+        y: Math.max(1, Math.min(window.innerHeight - 2, rect.top + Math.max(rect.height / 2, 24)))
+      };
+    })();
+  `;
+}
+
+function shouldExpandForLyricsScript(): string {
+  return `
+    (() => {
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const playPause = document.querySelector("ytmusic-player-bar .play-pause-button, ytmusic-player-bar #play-pause-button");
+      const label = clean((playPause?.getAttribute("title") || "") + " " + (playPause?.getAttribute("aria-label") || "")).toLowerCase();
+      const video = document.querySelector("video");
+      const isPlaying =
+        label.includes("pause") ||
+        label.includes("暫停") ||
+        Boolean(video && !video.paused && !video.ended);
+      const hasLyricsSurface = Boolean(
+        Array.from(document.querySelectorAll(
+          "#blyrics-wrapper, .blyrics-wrapper, .blyrics-container, ytmusic-lyrics-renderer, ytmusic-tab-renderer[page-type='MUSIC_PAGE_TYPE_TRACK_LYRICS'], ytmusic-player-page tp-yt-paper-tab, ytmusic-player-page [role='tab']"
+        )).some(visible)
+      );
+      return isPlaying && !hasLyricsSurface;
+    })();
+  `;
+}
+
+async function trustedClickMusicView(point: { x: number; y: number }): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+
+  view.webContents.sendInputEvent({
+    type: "mouseMove",
+    x: Math.round(point.x),
+    y: Math.round(point.y)
+  });
+  view.webContents.sendInputEvent({
+    type: "mouseDown",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    button: "left",
+    clickCount: 1
+  });
+  view.webContents.sendInputEvent({
+    type: "mouseUp",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    button: "left",
+    clickCount: 1
+  });
+}
+
+async function trustedClickMusicViewBottomBar(): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+
+  const bounds = view.getBounds();
+  const x = Math.round(Math.min(bounds.width - 80, Math.max(180, bounds.width * 0.46)));
+  const y = Math.round(Math.max(1, bounds.height - 34));
+  await trustedClickMusicView({ x, y });
+}
+
+async function trustedClickPlayerBarExpand(): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
+    return;
+  }
+
+  await trustedClickMusicViewBottomBar();
+}
+
+async function expandPlayerForLyricsIfNeeded(): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
+    return;
+  }
+
+  const shouldExpand = await view.webContents.executeJavaScript(shouldExpandForLyricsScript(), true) as boolean;
+  if (shouldExpand) {
+    await trustedClickPlayerBarExpand();
+  }
 }
 
 function createMusicView(): void {
@@ -145,6 +452,8 @@ function lyricsSignature(payload: LyricsPayload): string {
     artist: payload.artist,
     album: payload.album ?? "",
     isPlaying: payload.isPlaying,
+    volume: payload.volume,
+    muted: payload.muted,
     activeIndex: payload.activeIndex,
     lineCount: payload.lines.length,
     activeText: payload.lines[payload.activeIndex]?.text ?? "",
@@ -191,14 +500,16 @@ function updateOverlayMousePassthrough(): void {
 
   const bounds = overlayWindow.getBounds();
   const cursor = screen.getCursorScreenPoint();
-  const titlebarHeight = 56;
-  const inTitlebar =
+  const controlsHeight = state.settings.compactMode ? 38 : 56;
+  const controlsWidth = state.settings.compactMode ? 190 : 360;
+  const inControls =
     cursor.x >= bounds.x &&
     cursor.x <= bounds.x + bounds.width &&
+    cursor.x >= bounds.x + Math.max(0, bounds.width - controlsWidth) &&
     cursor.y >= bounds.y &&
-    cursor.y <= bounds.y + titlebarHeight;
+    cursor.y <= bounds.y + controlsHeight;
 
-  overlayWindow.setIgnoreMouseEvents(!inTitlebar, { forward: true });
+  overlayWindow.setIgnoreMouseEvents(!inControls, { forward: true });
 }
 
 async function pollLyricsFromMusicView(): Promise<void> {
@@ -325,6 +636,25 @@ function getLyricsPollingScript(): string {
         if (label.includes("play") || label.includes("播放")) return false;
         return false;
       };
+      const getVolumeState = () => {
+        const media = document.querySelector("video, audio");
+        const slider = document.querySelector("ytmusic-player-bar tp-yt-paper-slider#volume-slider, ytmusic-player-bar #volume-slider, ytmusic-player-bar tp-yt-paper-slider");
+        const rawSliderValue =
+          slider?.getAttribute("aria-valuenow") ||
+          slider?.getAttribute("value") ||
+          String(slider?.immediateValue ?? slider?.value ?? "");
+        const sliderValue = Number(rawSliderValue);
+        const mediaVolume = media ? media.volume : NaN;
+        const volume = Number.isFinite(sliderValue)
+          ? Math.max(0, Math.min(1, sliderValue > 1 ? sliderValue / 100 : sliderValue))
+          : Number.isFinite(mediaVolume)
+            ? Math.max(0, Math.min(1, mediaVolume))
+            : 0.8;
+        return {
+          volume,
+          muted: Boolean(media?.muted || volume <= 0)
+        };
+      };
       const title = firstText([
         "#blyrics-title",
         ".blyrics-title",
@@ -340,12 +670,15 @@ function getLyricsPollingScript(): string {
       const subtitleParts = splitSubtitle(subtitle);
       const artist = firstText(["#blyrics-artist", ".blyrics-artist"]) || subtitleParts[0] || "";
       const album = firstText(["#blyrics-album", ".blyrics-album"]) || subtitleParts.slice(1).join(" • ");
+      const volumeState = getVolumeState();
       const makePayload = (status, lines, activeIndex, message) => ({
         status,
         title,
         artist,
         album,
         isPlaying: getPlaybackState(),
+        volume: volumeState.volume,
+        muted: volumeState.muted,
         lines,
         activeIndex,
         message,
@@ -763,6 +1096,7 @@ function updateOverlaySettings(settings: OverlaySettings): void {
 
   overlayWindow?.webContents.send("overlay:settings", settings);
   settingsWindow?.webContents.send("overlay:settings", settings);
+  playerWindow?.webContents.send("overlay:settings", settings);
   persist();
 }
 
@@ -775,6 +1109,15 @@ function wireIpc(): void {
   ipcMain.on("ytmusic:lyrics", (_event, payload: LyricsPayload) => {
     latestLyricsSignature = lyricsSignature(payload);
     publishLyricsPayload(payload);
+  });
+
+  ipcMain.on("ytmusic:trusted-click-player-bar", () => {
+    trustedClickPlayerBarExpand().catch((error) => {
+      playerWindow?.webContents.send(
+        "player:status",
+        `Player page expand click failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   });
 
   ipcMain.on("overlay:update-settings", (_event, settings: OverlaySettings) => {
@@ -793,6 +1136,15 @@ function wireIpc(): void {
 
   ipcMain.on("overlay:close-settings-panel", () => {
     settingsWindow?.close();
+  });
+
+  ipcMain.on("overlay:music-command", (_event, command: string, value?: number) => {
+    sendMusicControl(command, value).catch((error) => {
+      playerWindow?.webContents.send(
+        "player:status",
+        `Music control failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   });
 
   ipcMain.on("player:command", (_event, command: string) => {
@@ -836,6 +1188,14 @@ app.whenReady().then(async () => {
   await loadBetterLyricsExtension();
   createPlayerWindow();
   createOverlayWindow();
+  setTimeout(() => {
+    checkForUpdates().catch((error) => {
+      playerWindow?.webContents.send(
+        "player:status",
+        `Update check skipped: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  }, 2500);
 });
 
 app.on("activate", () => {

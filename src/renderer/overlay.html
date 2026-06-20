@@ -14,6 +14,25 @@
           <small id="trackArtist">Waiting for playback</small>
         </div>
         <div class="controls">
+          <label id="volumeControl" class="volume-control" title="Volume" aria-label="Volume">
+            <span id="volumeIcon" class="volume-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path class="speaker-shape" d="M4.75 9.25h3.5l6-4.75v15l-6-4.75h-3.5z" />
+                <path class="volume-wave" d="M17.1 8.2c1.05 1.05 1.65 2.4 1.65 3.8s-.6 2.75-1.65 3.8" />
+                <path class="mute-slash" d="M18.9 8.2 15.1 12l3.8 3.8" />
+              </svg>
+            </span>
+            <input id="volumeInput" type="range" min="0" max="100" value="80" />
+          </label>
+          <button id="previousButton" class="icon-button transport-button" title="Previous track" type="button" aria-label="Previous track">
+            <span class="transport-icon previous-icon" aria-hidden="true"></span>
+          </button>
+          <button id="playPauseButton" class="icon-button transport-button play-button" title="Play / Pause" type="button" aria-label="Play / Pause">
+            <span class="transport-icon play-icon" aria-hidden="true"></span>
+          </button>
+          <button id="nextButton" class="icon-button transport-button" title="Next track" type="button" aria-label="Next track">
+            <span class="transport-icon next-icon" aria-hidden="true"></span>
+          </button>
           <button id="compactToggle" class="icon-button compact-button" title="Compact mode" type="button" aria-label="Compact mode">
             <span class="compact-icon" aria-hidden="true"></span>
           </button>

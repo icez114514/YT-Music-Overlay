@@ -14,5 +14,6 @@ contextBridge.exposeInMainWorld("overlayApi", {
   toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.send("overlay:toggle-settings-panel", rect),
   closeSettingsPanel: () => ipcRenderer.send("overlay:close-settings-panel"),
-  setMouseEvents: (ignore: boolean) => ipcRenderer.send("overlay:set-mouse-events", ignore)
+  setMouseEvents: (ignore: boolean) => ipcRenderer.send("overlay:set-mouse-events", ignore),
+  musicCommand: (command: string, value?: number) => ipcRenderer.send("overlay:music-command", command, value)
 });

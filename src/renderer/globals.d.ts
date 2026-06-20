@@ -3,10 +3,12 @@ import { LyricsPayload, OverlaySettings, PersistedState } from "../shared/types"
 declare global {
   interface Window {
     playerApi: {
+      getState: () => Promise<PersistedState>;
       getYouTubePreloadPath: () => Promise<string>;
       getExtensionStatus: () => Promise<string>;
       sendLyrics: (payload: LyricsPayload) => void;
       command: (command: string) => void;
+      onSettings: (callback: (settings: OverlaySettings) => void) => void;
       onStatus: (callback: (message: string) => void) => void;
     };
     overlayApi: {
@@ -18,6 +20,7 @@ declare global {
       toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) => void;
       closeSettingsPanel: () => void;
       setMouseEvents: (ignore: boolean) => void;
+      musicCommand: (command: string, value?: number) => void;
     };
   }
 }
