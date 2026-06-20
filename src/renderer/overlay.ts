@@ -411,8 +411,14 @@ controls?.addEventListener("mouseleave", () => {
 });
 
 for (const element of [dragStrip, controls]) {
-  element?.addEventListener("mouseenter", () => root.classList.add("toolbar-hover"));
-  element?.addEventListener("mouseleave", () => root.classList.remove("toolbar-hover"));
+  element?.addEventListener("mouseenter", () => {
+    root.classList.add("toolbar-hover");
+    window.overlayApi.setToolbarHover(true);
+  });
+  element?.addEventListener("mouseleave", () => {
+    root.classList.remove("toolbar-hover");
+    window.overlayApi.setToolbarHover(false);
+  });
 }
 
 async function bootOverlay(): Promise<void> {
@@ -421,6 +427,9 @@ async function bootOverlay(): Promise<void> {
   renderLyrics(await window.overlayApi.getLatestLyrics());
   window.overlayApi.onSettings(applySettings);
   window.overlayApi.onLyrics(renderLyrics);
+  window.overlayApi.onToolbarHover((hovered) => {
+    root.classList.toggle("toolbar-hover", hovered);
+  });
 }
 
 bootOverlay().catch((error) => {

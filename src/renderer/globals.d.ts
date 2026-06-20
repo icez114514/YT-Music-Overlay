@@ -20,6 +20,11 @@ declare global {
       toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) => void;
       closeSettingsPanel: () => void;
       setMouseEvents: (ignore: boolean) => void;
+      setToolbarHover: (hovered: boolean) => void;
+      onToolbarHover: (callback: (hovered: boolean) => void) => void;
+      beginResize: (edge: string, point: { x: number; y: number }) => void;
+      updateResize: (point: { x: number; y: number }) => void;
+      endResize: () => void;
       musicCommand: (command: string, value?: number) => void;
     };
   }

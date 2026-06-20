@@ -1,4 +1,4 @@
-import { app, BrowserView, BrowserWindow, dialog, ipcMain, nativeTheme, screen, session, shell } from "electron";
+import { app, BrowserView, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from "electron";
 import type { MessageBoxOptions } from "electron";
 import { get } from "node:https";
 import { readFileSync } from "node:fs";
@@ -15,18 +15,30 @@ import { loadState, saveState } from "./state-store";
 let playerWindow: BrowserWindow | null = null;
 let musicView: BrowserView | null = null;
 let overlayWindow: BrowserWindow | null = null;
+let lyricsWindow: BrowserWindow | null = null;
+let resizeHandleWindows: BrowserWindow[] = [];
 let settingsWindow: BrowserWindow | null = null;
 let state: PersistedState = loadState();
 let latestLyrics: LyricsPayload = defaultLyricsPayload;
 let extensionStatus = "Better Lyrics extension is not loaded yet.";
 let lyricsPollTimer: NodeJS.Timeout | null = null;
-let mousePassthroughTimer: NodeJS.Timeout | null = null;
 let betterLyricsFallbackTimer: NodeJS.Timeout | null = null;
 let betterLyricsFallbackInjecting = false;
 let latestLyricsSignature = "";
 let latestSettingsAnchor: { x: number; y: number; width: number; height: number } | null = null;
 let settingsWindowOffset: { x: number; y: number } | null = null;
 let isClosingApp = false;
+
+type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+type OverlayResizeState = {
+  edge: ResizeEdge;
+  startX: number;
+  startY: number;
+  bounds: Required<OverlayBounds>;
+} | null;
+
+let overlayResizeState: OverlayResizeState = null;
 
 const rendererPath = (...parts: string[]) => join(__dirname, "..", "renderer", ...parts);
 const preloadPath = (...parts: string[]) => join(__dirname, "..", "preload", ...parts);
@@ -37,6 +49,10 @@ const appAssetPath = (...parts: string[]) =>
 const betterLyricsPath = () => appAssetPath("extensions", "better-lyrics");
 const normalOverlayMinSize = { width: 420, height: 120 };
 const compactOverlayMinSize = { width: 180, height: 48 };
+const normalToolbarHeight = 58;
+const compactToolbarHeight = 42;
+const resizeHandleThickness = 8;
+const resizeCornerSize = 18;
 const settingsPanelSize = { width: 560, height: 430 };
 const updateReleaseApiUrl = "https://api.github.com/repos/icez114514/YT-Music-Overlay/releases/latest";
 const updateReleasePageUrl = "https://github.com/icez114514/YT-Music-Overlay/releases/latest";
@@ -51,6 +67,8 @@ function persist(): void {
 
 function closeAuxiliaryWindows(): void {
   settingsWindow?.close();
+  closeResizeHandleWindows();
+  lyricsWindow?.close();
   overlayWindow?.close();
 }
 
@@ -246,16 +264,6 @@ async function sendMusicControl(command: string, value?: number): Promise<void> 
     return;
   }
   await view.webContents.executeJavaScript(musicControlScript(command, value), true);
-  if (command === "play-pause") {
-    setTimeout(() => {
-      expandPlayerForLyricsIfNeeded().catch((error) => {
-        playerWindow?.webContents.send(
-          "player:status",
-          `Player page expand check failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-    }, 450);
-  }
 }
 
 function playerBarClickProbeScript(): string {
@@ -443,6 +451,7 @@ function createMusicView(): void {
 function publishLyricsPayload(payload: LyricsPayload): void {
   latestLyrics = payload;
   overlayWindow?.webContents.send("lyrics:update", latestLyrics);
+  lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
 }
 
 function lyricsSignature(payload: LyricsPayload): string {
@@ -476,40 +485,92 @@ function stopLyricsPolling(): void {
   }
 }
 
-function startMousePassthroughGuard(): void {
-  stopMousePassthroughGuard();
-  mousePassthroughTimer = setInterval(updateOverlayMousePassthrough, 80);
+function overlayToolbarHeight(): number {
+  return state.settings.compactMode ? compactToolbarHeight : normalToolbarHeight;
 }
 
-function stopMousePassthroughGuard(): void {
-  if (mousePassthroughTimer) {
-    clearInterval(mousePassthroughTimer);
-    mousePassthroughTimer = null;
+function minimumOverlayHeight(compactMode: boolean): number {
+  return compactMode ? compactOverlayMinSize.height : normalOverlayMinSize.height;
+}
+
+function sanitizeOverlayBounds(bounds: OverlayBounds, compactMode: boolean): Required<OverlayBounds> {
+  const minHeight = minimumOverlayHeight(compactMode);
+  return {
+    x: bounds.x ?? 120,
+    y: bounds.y ?? 120,
+    width: Math.max(bounds.width ?? state.settings.width, compactMode ? compactOverlayMinSize.width : normalOverlayMinSize.width),
+    height: Math.max(bounds.height ?? 220, minHeight)
+  };
+}
+
+function currentOverlayBounds(): Required<OverlayBounds> {
+  const bounds = state.settings.compactMode ? state.compactBounds : state.bounds;
+  return sanitizeOverlayBounds(bounds, state.settings.compactMode);
+}
+
+function syncOverlayWindowBounds(): void {
+  const bounds = currentOverlayBounds();
+  const toolbarHeight = overlayToolbarHeight();
+
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: toolbarHeight
+    });
   }
+
+  if (lyricsWindow && !lyricsWindow.isDestroyed()) {
+    lyricsWindow.setBounds(bounds);
+  }
+
+  positionResizeHandleWindows();
+  positionSettingsWindow();
 }
 
-function updateOverlayMousePassthrough(): void {
-  if (!overlayWindow || overlayWindow.isDestroyed()) {
+function resizeHandleDefinitions(bounds: Required<OverlayBounds>): Array<{ edge: ResizeEdge; x: number; y: number; width: number; height: number }> {
+  const t = resizeHandleThickness;
+  const c = resizeCornerSize;
+  return [
+    { edge: "n", x: bounds.x + c, y: bounds.y, width: Math.max(1, bounds.width - c * 2), height: t },
+    { edge: "s", x: bounds.x + c, y: bounds.y + bounds.height - t, width: Math.max(1, bounds.width - c * 2), height: t },
+    { edge: "e", x: bounds.x + bounds.width - t, y: bounds.y + c, width: t, height: Math.max(1, bounds.height - c * 2) },
+    { edge: "w", x: bounds.x, y: bounds.y + c, width: t, height: Math.max(1, bounds.height - c * 2) },
+    { edge: "nw", x: bounds.x, y: bounds.y, width: c, height: c },
+    { edge: "ne", x: bounds.x + bounds.width - c, y: bounds.y, width: c, height: c },
+    { edge: "sw", x: bounds.x, y: bounds.y + bounds.height - c, width: c, height: c },
+    { edge: "se", x: bounds.x + bounds.width - c, y: bounds.y + bounds.height - c, width: c, height: c }
+  ];
+}
+
+function positionResizeHandleWindows(): void {
+  if (resizeHandleWindows.length === 0) {
     return;
   }
 
-  if (!state.settings.clickThrough) {
-    overlayWindow.setIgnoreMouseEvents(false);
-    return;
+  const bounds = currentOverlayBounds();
+  const definitions = resizeHandleDefinitions(bounds);
+  for (const definition of definitions) {
+    const handle = resizeHandleWindows.find((window) => !window.isDestroyed() && window.getTitle() === `resize-${definition.edge}`);
+    handle?.setBounds({
+      x: Math.round(definition.x),
+      y: Math.round(definition.y),
+      width: Math.round(definition.width),
+      height: Math.round(definition.height)
+    });
+    handle?.setAlwaysOnTop(true, "screen-saver");
   }
+}
 
-  const bounds = overlayWindow.getBounds();
-  const cursor = screen.getCursorScreenPoint();
-  const controlsHeight = state.settings.compactMode ? 38 : 56;
-  const controlsWidth = state.settings.compactMode ? 190 : 360;
-  const inControls =
-    cursor.x >= bounds.x &&
-    cursor.x <= bounds.x + bounds.width &&
-    cursor.x >= bounds.x + Math.max(0, bounds.width - controlsWidth) &&
-    cursor.y >= bounds.y &&
-    cursor.y <= bounds.y + controlsHeight;
-
-  overlayWindow.setIgnoreMouseEvents(!inControls, { forward: true });
+function closeResizeHandleWindows(): void {
+  const handles = resizeHandleWindows;
+  resizeHandleWindows = [];
+  for (const handle of handles) {
+    if (!handle.isDestroyed()) {
+      handle.close();
+    }
+  }
 }
 
 async function pollLyricsFromMusicView(): Promise<void> {
@@ -914,15 +975,58 @@ async function loadBetterLyricsExtension(): Promise<void> {
 }
 
 function createOverlayWindow(): void {
-  const bounds = state.settings.compactMode ? state.compactBounds : state.bounds;
+  const bounds = currentOverlayBounds();
   const minSize = state.settings.compactMode ? compactOverlayMinSize : normalOverlayMinSize;
+  const toolbarHeight = overlayToolbarHeight();
+
+  lyricsWindow = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    minWidth: minSize.width,
+    minHeight: minSize.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    title: "YT Music Lyrics Overlay",
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: preloadPath("overlay-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  lyricsWindow.setAlwaysOnTop(true, "screen-saver");
+  lyricsWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  lyricsWindow.setIgnoreMouseEvents(true, { forward: true });
+  lyricsWindow.loadFile(rendererPath("overlay-lyrics.html"));
+
+  lyricsWindow.webContents.on("console-message", (event) => {
+    playerWindow?.webContents.send("player:status", `Lyrics overlay console: ${event.message}`);
+  });
+
+  lyricsWindow.webContents.on("did-finish-load", () => {
+    lyricsWindow?.webContents.send("overlay:settings", state.settings);
+    lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
+  });
+
+  lyricsWindow.on("closed", () => {
+    lyricsWindow = null;
+  });
+
   overlayWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
-    width: bounds.width ?? state.settings.width,
-    height: bounds.height ?? 220,
+    width: bounds.width,
+    height: toolbarHeight,
     minWidth: minSize.width,
-    minHeight: minSize.height,
+    minHeight: toolbarHeight,
+    maxHeight: toolbarHeight,
     frame: false,
     transparent: true,
     resizable: !state.settings.locked,
@@ -940,12 +1044,13 @@ function createOverlayWindow(): void {
 
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  updateOverlayMousePassthrough();
-  startMousePassthroughGuard();
-  overlayWindow.loadFile(rendererPath("overlay.html"));
+  overlayWindow.setMinimumSize(minSize.width, toolbarHeight);
+  overlayWindow.setMaximumSize(10000, toolbarHeight);
+  overlayWindow.setIgnoreMouseEvents(false);
+  overlayWindow.loadFile(rendererPath("overlay-toolbar.html"));
 
   overlayWindow.webContents.on("console-message", (event) => {
-    playerWindow?.webContents.send("player:status", `Overlay console: ${event.message}`);
+    playerWindow?.webContents.send("player:status", `Toolbar overlay console: ${event.message}`);
   });
 
   overlayWindow.webContents.on("did-finish-load", () => {
@@ -959,23 +1064,69 @@ function createOverlayWindow(): void {
   overlayWindow.on("resized", rememberOverlayBounds);
   overlayWindow.on("close", () => {
     rememberOverlayBounds();
+    closeResizeHandleWindows();
+    lyricsWindow?.close();
   });
   overlayWindow.on("closed", () => {
-    stopMousePassthroughGuard();
     settingsWindow?.close();
     overlayWindow = null;
   });
+
+  createResizeHandleWindows();
+}
+
+function createResizeHandleWindows(): void {
+  closeResizeHandleWindows();
+  const definitions = resizeHandleDefinitions(currentOverlayBounds());
+
+  for (const definition of definitions) {
+    const handleWindow = new BrowserWindow({
+      x: Math.round(definition.x),
+      y: Math.round(definition.y),
+      width: Math.round(definition.width),
+      height: Math.round(definition.height),
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      closable: false,
+      focusable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      title: `resize-${definition.edge}`,
+      backgroundColor: "#00000000",
+      show: !state.settings.locked,
+      webPreferences: {
+        preload: preloadPath("overlay-preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
+
+    handleWindow.setAlwaysOnTop(true, "screen-saver");
+    handleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    handleWindow.loadFile(rendererPath("resize-handle.html"), {
+      query: { edge: definition.edge }
+    });
+    handleWindow.on("closed", () => {
+      resizeHandleWindows = resizeHandleWindows.filter((window) => window !== handleWindow);
+    });
+    resizeHandleWindows.push(handleWindow);
+  }
 }
 
 function createSettingsWindow(anchor?: { x: number; y: number; width: number; height: number }): void {
   latestSettingsAnchor = anchor ?? latestSettingsAnchor;
-  const overlayBounds = overlayWindow?.getBounds();
+  const overlayBounds = currentOverlayBounds();
   settingsWindowOffset = {
-    x: Math.round((anchor?.x ?? ((overlayBounds?.width ?? settingsPanelSize.width) - 42)) + (anchor?.width ?? 30) - settingsPanelSize.width),
+    x: Math.round((anchor?.x ?? (overlayBounds.width - 42)) + (anchor?.width ?? 30) - settingsPanelSize.width),
     y: Math.round(anchor?.y ?? 42)
   };
-  const x = Math.round((overlayBounds?.x ?? 0) + settingsWindowOffset.x);
-  const y = Math.round((overlayBounds?.y ?? 0) + settingsWindowOffset.y);
+  const x = Math.round(overlayBounds.x + settingsWindowOffset.x);
+  const y = Math.round(overlayBounds.y + settingsWindowOffset.y);
 
   settingsWindow = new BrowserWindow({
     x,
@@ -1032,10 +1183,10 @@ function toggleSettingsWindow(anchor?: { x: number; y: number; width: number; he
 }
 
 function positionSettingsWindow(): void {
-  if (!settingsWindow || !settingsWindowOffset || !overlayWindow) {
+  if (!settingsWindow || !settingsWindowOffset) {
     return;
   }
-  const overlayBounds = overlayWindow.getBounds();
+  const overlayBounds = currentOverlayBounds();
   settingsWindow.setBounds({
     x: Math.round(overlayBounds.x + settingsWindowOffset.x),
     y: Math.round(overlayBounds.y + settingsWindowOffset.y),
@@ -1049,13 +1200,90 @@ function rememberOverlayBounds(): void {
     return;
   }
 
-  const bounds = overlayWindow.getBounds() satisfies OverlayBounds;
+  const toolbarBounds = overlayWindow.getBounds();
+  const previousBounds = currentOverlayBounds();
+  const bounds = {
+    x: toolbarBounds.x,
+    y: toolbarBounds.y,
+    width: toolbarBounds.width,
+    height: previousBounds.height
+  } satisfies OverlayBounds;
   if (state.settings.compactMode) {
     state.compactBounds = bounds;
   } else {
     state.bounds = bounds;
   }
+  if (lyricsWindow && !lyricsWindow.isDestroyed()) {
+    lyricsWindow.setBounds(bounds);
+  }
   positionSettingsWindow();
+  persist();
+}
+
+function boundsForResize(edge: ResizeEdge, startBounds: Required<OverlayBounds>, deltaX: number, deltaY: number): Required<OverlayBounds> {
+  const minSize = state.settings.compactMode ? compactOverlayMinSize : normalOverlayMinSize;
+  let { x, y, width, height } = startBounds;
+
+  if (edge.includes("e")) {
+    width = Math.max(minSize.width, startBounds.width + deltaX);
+  }
+  if (edge.includes("s")) {
+    height = Math.max(minSize.height, startBounds.height + deltaY);
+  }
+  if (edge.includes("w")) {
+    const nextWidth = Math.max(minSize.width, startBounds.width - deltaX);
+    x = startBounds.x + (startBounds.width - nextWidth);
+    width = nextWidth;
+  }
+  if (edge.includes("n")) {
+    const nextHeight = Math.max(minSize.height, startBounds.height - deltaY);
+    y = startBounds.y + (startBounds.height - nextHeight);
+    height = nextHeight;
+  }
+
+  return sanitizeOverlayBounds({ x, y, width, height }, state.settings.compactMode);
+}
+
+function storeOverlayBounds(bounds: Required<OverlayBounds>): void {
+  if (state.settings.compactMode) {
+    state.compactBounds = bounds;
+  } else {
+    state.bounds = bounds;
+  }
+}
+
+function beginOverlayResize(edge: ResizeEdge, point: { x: number; y: number }): void {
+  if (state.settings.locked) {
+    return;
+  }
+  overlayResizeState = {
+    edge,
+    startX: point.x,
+    startY: point.y,
+    bounds: currentOverlayBounds()
+  };
+}
+
+function updateOverlayResize(point: { x: number; y: number }): void {
+  if (!overlayResizeState) {
+    return;
+  }
+
+  const nextBounds = boundsForResize(
+    overlayResizeState.edge,
+    overlayResizeState.bounds,
+    point.x - overlayResizeState.startX,
+    point.y - overlayResizeState.startY
+  );
+  storeOverlayBounds(nextBounds);
+  syncOverlayWindowBounds();
+}
+
+function endOverlayResize(): void {
+  if (!overlayResizeState) {
+    return;
+  }
+  overlayResizeState = null;
   persist();
 }
 
@@ -1064,7 +1292,10 @@ function applyOverlayModeMinSize(compactMode: boolean): void {
     return;
   }
   const minSize = compactMode ? compactOverlayMinSize : normalOverlayMinSize;
-  overlayWindow.setMinimumSize(minSize.width, minSize.height);
+  const toolbarHeight = compactMode ? compactToolbarHeight : normalToolbarHeight;
+  overlayWindow.setMinimumSize(minSize.width, toolbarHeight);
+  overlayWindow.setMaximumSize(10000, toolbarHeight);
+  lyricsWindow?.setMinimumSize(minSize.width, minSize.height);
 }
 
 function updateOverlaySettings(settings: OverlaySettings): void {
@@ -1072,8 +1303,8 @@ function updateOverlaySettings(settings: OverlaySettings): void {
   const willBeCompact = settings.compactMode;
   const modeChanged = wasCompact !== willBeCompact;
 
-  if (modeChanged && overlayWindow) {
-    const currentBounds = overlayWindow.getBounds() satisfies OverlayBounds;
+  if (modeChanged) {
+    const currentBounds = currentOverlayBounds() satisfies OverlayBounds;
     if (wasCompact) {
       state.compactBounds = currentBounds;
     } else {
@@ -1083,18 +1314,36 @@ function updateOverlaySettings(settings: OverlaySettings): void {
 
   state.settings = settings;
   applyOverlayModeMinSize(settings.compactMode);
-  updateOverlayMousePassthrough();
   overlayWindow?.setResizable(!settings.locked);
+  for (const handle of resizeHandleWindows) {
+    if (!handle.isDestroyed()) {
+      if (settings.locked) {
+        handle.hide();
+      } else {
+        handle.showInactive();
+      }
+    }
+  }
 
-  if (modeChanged && overlayWindow) {
+  if (modeChanged) {
     const targetBounds = willBeCompact ? state.compactBounds : state.bounds;
-    overlayWindow.setBounds({
-      ...overlayWindow.getBounds(),
+    const currentBounds = currentOverlayBounds();
+    const nextBounds = sanitizeOverlayBounds({
+      ...currentBounds,
       ...targetBounds
-    });
+    }, willBeCompact);
+    if (willBeCompact) {
+      state.compactBounds = nextBounds;
+    } else {
+      state.bounds = nextBounds;
+    }
+    syncOverlayWindowBounds();
+  } else {
+    syncOverlayWindowBounds();
   }
 
   overlayWindow?.webContents.send("overlay:settings", settings);
+  lyricsWindow?.webContents.send("overlay:settings", settings);
   settingsWindow?.webContents.send("overlay:settings", settings);
   playerWindow?.webContents.send("overlay:settings", settings);
   persist();
@@ -1125,9 +1374,24 @@ function wireIpc(): void {
   });
 
   ipcMain.on("overlay:set-mouse-events", (_event, ignore: boolean) => {
-    if (state.settings.clickThrough) {
-      overlayWindow?.setIgnoreMouseEvents(ignore, { forward: true });
-    }
+    void ignore;
+  });
+
+  ipcMain.on("overlay:toolbar-hover", (_event, hovered: boolean) => {
+    overlayWindow?.webContents.send("overlay:toolbar-hover", hovered);
+    lyricsWindow?.webContents.send("overlay:toolbar-hover", hovered);
+  });
+
+  ipcMain.on("overlay:begin-resize", (_event, edge: ResizeEdge, point: { x: number; y: number }) => {
+    beginOverlayResize(edge, point);
+  });
+
+  ipcMain.on("overlay:update-resize", (_event, point: { x: number; y: number }) => {
+    updateOverlayResize(point);
+  });
+
+  ipcMain.on("overlay:end-resize", () => {
+    endOverlayResize();
   });
 
   ipcMain.on("overlay:toggle-settings-panel", (_event, rect: { x: number; y: number; width: number; height: number }) => {
@@ -1165,10 +1429,12 @@ function wireIpc(): void {
         createOverlayWindow();
       }
       overlayWindow?.show();
+      lyricsWindow?.show();
     }
 
     if (command === "hide-overlay") {
       overlayWindow?.hide();
+      lyricsWindow?.hide();
     }
 
     if (command === "open-user-data") {
@@ -1178,6 +1444,7 @@ function wireIpc(): void {
     if (command === "disable-click-through") {
       updateOverlaySettings({ ...state.settings, clickThrough: false });
       overlayWindow?.show();
+      lyricsWindow?.show();
     }
   });
 }

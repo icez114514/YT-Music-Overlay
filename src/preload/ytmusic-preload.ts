@@ -15,6 +15,13 @@ let publishTimer: number | null = null;
 let lastAutoLyricsClickAt = 0;
 let lastAutoLyricsTitle = "";
 let lyricsTabRetryTimer: number | null = null;
+const MUSIC_STATE_SELECTOR = [
+  "ytmusic-player-page",
+  "ytmusic-player-bar",
+  "ytmusic-player",
+  "tp-yt-paper-tab",
+  ".blyrics-container"
+].join(",");
 
 function clickElementAtCenter(element: HTMLElement): void {
   const rect = element.getBoundingClientRect();
@@ -30,6 +37,15 @@ function clickElementAtCenter(element: HTMLElement): void {
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isInstrumentalText(text: string): boolean {
+  return /^(?:[\u266a\u266b\u266c]+|instrumental|\u9593\u594f|\u7eaf\u97f3\u4e50|\u7d14\u97f3\u6a02)$/i.test(text.trim());
+}
+
+function isInstrumentalElement(element: Element, text: string): boolean {
+  const className = String(element.className).toLowerCase();
+  return isInstrumentalText(text) || (className.includes("instrumental") && text.length <= 32);
 }
 
 function extractBetterLyricsText(element: Element): string {
@@ -170,13 +186,6 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     return [];
   }
 
-  const instrumentalElement = betterLyricsContainer.querySelector(
-    ".blyrics--instrumental, .blyrics-instrumental, [class*='instrumental' i]"
-  );
-  if (instrumentalElement && isVisible(instrumentalElement)) {
-    return [{ text: "♪", active: true }];
-  }
-
   const candidates = Array.from(betterLyricsContainer.children)
     .filter((element): element is HTMLElement => element instanceof HTMLElement)
     .filter((element) => isVisible(element));
@@ -198,14 +207,14 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     }
 
     const text = extractBetterLyricsText(element);
-    if (/^(♪|♫|♬|instrumental|間奏|纯音乐|純音樂)$/i.test(text)) {
-      return [{ text: "♪", active: true }];
-    }
     if (!text || text.length > 220 || seen.has(text)) {
       continue;
     }
 
     const active = isBetterLyricsActive(element);
+    if (active && isInstrumentalElement(element, text)) {
+      return [{ text: "\u266a", active: true }];
+    }
     seen.add(text);
     lines.push({
       text,
@@ -225,6 +234,9 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     ".blyrics-container > div"
   );
   const activeText = activeLineElement ? extractBetterLyricsText(activeLineElement) : activeElement ? extractBetterLyricsText(activeElement) : "";
+  if (activeLineElement && isInstrumentalElement(activeLineElement, activeText)) {
+    return [{ text: "\u266a", active: true }];
+  }
   if (activeText) {
     const index = lines.findIndex((line) => line.text === activeText || activeText.includes(line.text));
     if (index >= 0) {
@@ -330,7 +342,9 @@ function isLyricsTabActive(element: Element): boolean {
 
 function visibleLyricsTabs(): HTMLElement[] {
   return Array.from(
-    document.querySelectorAll<HTMLElement>("tp-yt-paper-tab, ytmusic-tab-renderer, [role='tab'], yt-formatted-string")
+    document.querySelectorAll<HTMLElement>(
+      "ytmusic-player-page tp-yt-paper-tab, ytmusic-player-page ytmusic-tab-renderer, ytmusic-player-page [role='tab']"
+    )
   )
     .filter(isLyricsTabElement)
     .filter((element) => isVisible(element));
@@ -450,7 +464,7 @@ function autoOpenLyricsTab(title: string, isPlaying: boolean, expandedAttempted 
   }
 
   const now = Date.now();
-  if (title === lastAutoLyricsTitle && now - lastAutoLyricsClickAt < 8000) {
+  if (!expandedAttempted && title === lastAutoLyricsTitle && now - lastAutoLyricsClickAt < 8000) {
     return;
   }
 
@@ -458,6 +472,8 @@ function autoOpenLyricsTab(title: string, isPlaying: boolean, expandedAttempted 
 
   if (!expandedAttempted && !hasLyricsSurface) {
     if (robustAutoExpandPlayerPage() || autoExpandPlayerPage()) {
+      lastAutoLyricsClickAt = now;
+      lastAutoLyricsTitle = title;
       scheduleLyricsTabRetry(title);
     }
     return;
@@ -491,12 +507,12 @@ function scheduleLyricsTabRetry(title: string): void {
     lyricsTabRetryTimer = null;
     attempts += 1;
     autoOpenLyricsTab(title, getPlaybackState(), true);
-    if (attempts < 8 && visibleLyricsTabs().length === 0 && getPlaybackState()) {
-      lyricsTabRetryTimer = window.setTimeout(retry, 450);
+    if (attempts < 5 && visibleLyricsTabs().length === 0 && getPlaybackState()) {
+      lyricsTabRetryTimer = window.setTimeout(retry, 700);
     }
   };
 
-  lyricsTabRetryTimer = window.setTimeout(retry, 650);
+  lyricsTabRetryTimer = window.setTimeout(retry, 900);
 }
 
 function collectPayload(): LyricsPayload {
@@ -601,9 +617,33 @@ function schedulePublish(delay = 150): void {
   }, delay);
 }
 
+function mutationTouchesMusicState(mutations: MutationRecord[]): boolean {
+  return mutations.some((mutation) => {
+    const target = mutation.target;
+    if (target instanceof Element && target.closest(MUSIC_STATE_SELECTOR)) {
+      return true;
+    }
+
+    for (const node of Array.from(mutation.addedNodes)) {
+      if (
+        node instanceof Element &&
+        (node.matches(MUSIC_STATE_SELECTOR) || Boolean(node.querySelector(MUSIC_STATE_SELECTOR)))
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   publish();
-  const observer = new MutationObserver(() => schedulePublish());
+  const observer = new MutationObserver((mutations) => {
+    if (mutationTouchesMusicState(mutations)) {
+      schedulePublish();
+    }
+  });
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,

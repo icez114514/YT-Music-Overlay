@@ -6,6 +6,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "build": "tsc && powershell -NoProfile -ExecutionPolicy Bypass -Command \"Copy-Item -Force src/renderer/*.html,src/renderer/*.css dist/renderer\"",
+    "check:utf8": "node scripts/check-utf8.js",
     "pack:portable": "npm run build && electron-builder --win portable zip",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron ."
