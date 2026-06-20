@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0app"
+cd /d "%~dp0"
 npm start
 if errorlevel 1 (
   echo.

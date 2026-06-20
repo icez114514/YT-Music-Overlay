@@ -24,6 +24,7 @@ let betterLyricsFallbackInjecting = false;
 let latestLyricsSignature = "";
 let latestSettingsAnchor: { x: number; y: number; width: number; height: number } | null = null;
 let settingsWindowOffset: { x: number; y: number } | null = null;
+let isClosingApp = false;
 
 const rendererPath = (...parts: string[]) => join(__dirname, "..", "renderer", ...parts);
 const preloadPath = (...parts: string[]) => join(__dirname, "..", "preload", ...parts);
@@ -34,6 +35,7 @@ const appAssetPath = (...parts: string[]) =>
 const betterLyricsPath = () => appAssetPath("extensions", "better-lyrics");
 const normalOverlayMinSize = { width: 420, height: 120 };
 const compactOverlayMinSize = { width: 180, height: 48 };
+const settingsPanelSize = { width: 390, height: 520 };
 
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
 app.commandLine.appendSwitch("disable-background-networking");
@@ -41,6 +43,11 @@ app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 
 function persist(): void {
   saveState(state);
+}
+
+function closeAuxiliaryWindows(): void {
+  settingsWindow?.close();
+  overlayWindow?.close();
 }
 
 function createPlayerWindow(): void {
@@ -69,7 +76,9 @@ function createPlayerWindow(): void {
   createMusicView();
 
   playerWindow.on("closed", () => {
+    isClosingApp = true;
     stopLyricsPolling();
+    closeAuxiliaryWindows();
     musicView = null;
     playerWindow = null;
   });
@@ -627,10 +636,9 @@ function createOverlayWindow(): void {
 
 function createSettingsWindow(anchor?: { x: number; y: number; width: number; height: number }): void {
   latestSettingsAnchor = anchor ?? latestSettingsAnchor;
-  const size = { width: 390, height: 520 };
   const overlayBounds = overlayWindow?.getBounds();
   settingsWindowOffset = {
-    x: Math.round((anchor?.x ?? ((overlayBounds?.width ?? size.width) - 42)) + (anchor?.width ?? 30) - size.width),
+    x: Math.round((anchor?.x ?? ((overlayBounds?.width ?? settingsPanelSize.width) - 42)) + (anchor?.width ?? 30) - settingsPanelSize.width),
     y: Math.round(anchor?.y ?? 42)
   };
   const x = Math.round((overlayBounds?.x ?? 0) + settingsWindowOffset.x);
@@ -639,10 +647,12 @@ function createSettingsWindow(anchor?: { x: number; y: number; width: number; he
   settingsWindow = new BrowserWindow({
     x,
     y,
-    width: size.width,
-    height: size.height,
-    minWidth: 340,
-    minHeight: 360,
+    width: settingsPanelSize.width,
+    height: settingsPanelSize.height,
+    minWidth: settingsPanelSize.width,
+    minHeight: settingsPanelSize.height,
+    maxWidth: settingsPanelSize.width,
+    maxHeight: settingsPanelSize.height,
     frame: false,
     transparent: true,
     resizable: false,
@@ -660,6 +670,8 @@ function createSettingsWindow(anchor?: { x: number; y: number; width: number; he
 
   settingsWindow.setAlwaysOnTop(true, "screen-saver");
   settingsWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  settingsWindow.setMinimumSize(settingsPanelSize.width, settingsPanelSize.height);
+  settingsWindow.setMaximumSize(settingsPanelSize.width, settingsPanelSize.height);
   settingsWindow.loadFile(rendererPath("settings.html"));
   settingsWindow.webContents.on("did-finish-load", () => {
     settingsWindow?.webContents.send("overlay:settings", state.settings);
@@ -673,9 +685,8 @@ function toggleSettingsWindow(anchor?: { x: number; y: number; width: number; he
   latestSettingsAnchor = anchor ?? latestSettingsAnchor;
   if (settingsWindow) {
     if (anchor) {
-      const size = settingsWindow.getBounds();
       settingsWindowOffset = {
-        x: Math.round(anchor.x + anchor.width - size.width),
+        x: Math.round(anchor.x + anchor.width - settingsPanelSize.width),
         y: Math.round(anchor.y)
       };
     }
@@ -692,10 +703,12 @@ function positionSettingsWindow(): void {
     return;
   }
   const overlayBounds = overlayWindow.getBounds();
-  settingsWindow.setPosition(
-    Math.round(overlayBounds.x + settingsWindowOffset.x),
-    Math.round(overlayBounds.y + settingsWindowOffset.y)
-  );
+  settingsWindow.setBounds({
+    x: Math.round(overlayBounds.x + settingsWindowOffset.x),
+    y: Math.round(overlayBounds.y + settingsWindowOffset.y),
+    width: settingsPanelSize.width,
+    height: settingsPanelSize.height
+  });
 }
 
 function rememberOverlayBounds(): void {
@@ -826,6 +839,9 @@ app.whenReady().then(async () => {
 });
 
 app.on("activate", () => {
+  if (isClosingApp) {
+    return;
+  }
   if (!playerWindow) {
     createPlayerWindow();
   }

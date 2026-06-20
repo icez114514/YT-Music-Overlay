@@ -1,5 +1,5 @@
-app/node_modules/
-app/dist/
-app/release/
+node_modules/
+dist/
+release/
 *.log
 *.tsbuildinfo

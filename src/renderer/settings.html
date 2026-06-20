@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Overlay Settings</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <form id="settingsPanel" class="settings-panel">
+      <header class="panel-header">
+        <strong>Overlay Settings</strong>
+        <button id="closeButton" type="button" title="Close">x</button>
+      </header>
+
+      <div class="settings-grid">
+        <label>Text color <input id="textColorInput" type="color" /></label>
+        <label>Inactive text <input id="inactiveTextColorInput" type="color" /></label>
+        <label>Background <input id="backgroundColorInput" type="color" /></label>
+        <label>Accent <input id="accentColorInput" type="color" /></label>
+        <label>Border <input id="borderColorInput" type="color" /></label>
+        <label>Opacity <input id="opacityInput" type="range" min="0.05" max="1" step="0.02" /></label>
+        <label>Font size <input id="fontSizeInput" type="range" min="18" max="72" step="1" /></label>
+        <label>Adjacent scale <input id="adjacentScaleInput" type="range" min="0.42" max="0.9" step="0.01" /></label>
+        <label>Blur <input id="blurInput" type="range" min="0" max="36" step="1" /></label>
+        <label>Shadow <input id="shadowInput" type="range" min="0" max="100" step="1" /></label>
+        <label>Radius <input id="radiusInput" type="range" min="0" max="28" step="1" /></label>
+        <label>Line gap <input id="lineGapInput" type="range" min="2" max="30" step="1" /></label>
+        <label>Vertical padding <input id="verticalPaddingInput" type="range" min="6" max="56" step="1" /></label>
+        <label>Horizontal padding <input id="horizontalPaddingInput" type="range" min="10" max="80" step="1" /></label>
+      </div>
+
+      <div class="checks">
+        <label><input id="adjacentInput" type="checkbox" /> Show adjacent lines</label>
+        <label><input id="lockedInput" type="checkbox" /> Lock size</label>
+        <label><input id="clickInput" type="checkbox" /> Click through</label>
+        <label><input id="hoverBackgroundInput" type="checkbox" /> Show background on hover</label>
+      </div>
+    </form>
+    <script src="./settings.js"></script>
+  </body>
+</html>
