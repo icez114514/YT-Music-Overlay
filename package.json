@@ -19,7 +19,7 @@
     ],
     "files": [
       "dist/**/*",
-      "extensions/**/*",
+      "extensions/better-lyrics/**/*",
       "package.json"
     ],
     "directories": {
