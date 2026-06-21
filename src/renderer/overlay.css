@@ -34,41 +34,6 @@ body {
   padding: 8px;
 }
 
-.resize-handle-body {
-  padding: 0;
-}
-
-.resize-handle {
-  width: 100%;
-  height: 100%;
-  border: 1px solid transparent;
-  background: transparent;
-}
-
-.resize-handle:hover {
-  border-color: color-mix(in srgb, var(--border-color) 38%, transparent);
-}
-
-.resize-handle-window[data-edge="n"],
-.resize-handle-window[data-edge="s"] {
-  cursor: ns-resize;
-}
-
-.resize-handle-window[data-edge="e"],
-.resize-handle-window[data-edge="w"] {
-  cursor: ew-resize;
-}
-
-.resize-handle-window[data-edge="ne"],
-.resize-handle-window[data-edge="sw"] {
-  cursor: nesw-resize;
-}
-
-.resize-handle-window[data-edge="nw"],
-.resize-handle-window[data-edge="se"] {
-  cursor: nwse-resize;
-}
-
 .toolbar-body {
   padding: 8px;
 }

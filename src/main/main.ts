@@ -10,13 +10,13 @@ import {
   OverlaySettings,
   PersistedState
 } from "../shared/types";
+import { openPlayerPageForLyricsOnce } from "./player-page-expander";
 import { loadState, saveState } from "./state-store";
 
 let playerWindow: BrowserWindow | null = null;
 let musicView: BrowserView | null = null;
 let overlayWindow: BrowserWindow | null = null;
 let lyricsWindow: BrowserWindow | null = null;
-let resizeHandleWindows: BrowserWindow[] = [];
 let settingsWindow: BrowserWindow | null = null;
 let state: PersistedState = loadState();
 let latestLyrics: LyricsPayload = defaultLyricsPayload;
@@ -28,17 +28,6 @@ let latestLyricsSignature = "";
 let latestSettingsAnchor: { x: number; y: number; width: number; height: number } | null = null;
 let settingsWindowOffset: { x: number; y: number } | null = null;
 let isClosingApp = false;
-
-type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-
-type OverlayResizeState = {
-  edge: ResizeEdge;
-  startX: number;
-  startY: number;
-  bounds: Required<OverlayBounds>;
-} | null;
-
-let overlayResizeState: OverlayResizeState = null;
 
 const rendererPath = (...parts: string[]) => join(__dirname, "..", "renderer", ...parts);
 const preloadPath = (...parts: string[]) => join(__dirname, "..", "preload", ...parts);
@@ -52,14 +41,21 @@ const compactOverlayMinSize = { width: 180, height: 48 };
 const normalToolbarHeight = 58;
 const compactToolbarHeight = 42;
 const resizeHandleThickness = 8;
-const resizeCornerSize = 18;
 const settingsPanelSize = { width: 560, height: 430 };
 const updateReleaseApiUrl = "https://api.github.com/repos/icez114514/YT-Music-Overlay/releases/latest";
 const updateReleasePageUrl = "https://github.com/icez114514/YT-Music-Overlay/releases/latest";
+const splitOverlayWindowsEnabled = false;
 
+app.disableHardwareAcceleration();
+if (process.env.YTMO_USER_DATA_DIR) {
+  app.setPath("userData", process.env.YTMO_USER_DATA_DIR);
+}
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
 app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("disable-gpu-sandbox");
 
 function persist(): void {
   saveState(state);
@@ -67,7 +63,6 @@ function persist(): void {
 
 function closeAuxiliaryWindows(): void {
   settingsWindow?.close();
-  closeResizeHandleWindows();
   lyricsWindow?.close();
   overlayWindow?.close();
 }
@@ -204,7 +199,11 @@ function musicControlScript(command: string, value?: number): string {
     (() => {
       const clickFirst = (selectors) => {
         for (const selector of selectors) {
-          const element = document.querySelector(selector);
+          const element = Array.from(document.querySelectorAll(selector)).find((candidate) => {
+            const rect = candidate.getBoundingClientRect();
+            const style = window.getComputedStyle(candidate);
+            return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+          });
           if (element && typeof element.click === "function") {
             element.click();
             return true;
@@ -214,13 +213,13 @@ function musicControlScript(command: string, value?: number): string {
       };
       const command = ${JSON.stringify(command)};
       if (command === "previous") {
-        return clickFirst(["ytmusic-player-bar .previous-button", "ytmusic-player-bar [title='Previous']", "ytmusic-player-bar [aria-label*='Previous' i]"]);
+        return clickFirst(["ytmusic-player-bar tp-yt-paper-icon-button.previous-button", "ytmusic-player-bar button.previous-button", "ytmusic-player-bar .previous-button"]);
       }
       if (command === "play-pause") {
-        return clickFirst(["ytmusic-player-bar .play-pause-button", "ytmusic-player-bar [title='Play']", "ytmusic-player-bar [title='Pause']", "ytmusic-player-bar [aria-label*='Play' i]", "ytmusic-player-bar [aria-label*='Pause' i]"]);
+        return clickFirst(["ytmusic-player-bar tp-yt-paper-icon-button.play-pause-button", "ytmusic-player-bar button.play-pause-button", "ytmusic-player-bar #play-pause-button", "ytmusic-player-bar .play-pause-button"]);
       }
       if (command === "next") {
-        return clickFirst(["ytmusic-player-bar .next-button", "ytmusic-player-bar [title='Next']", "ytmusic-player-bar [aria-label*='Next' i]"]);
+        return clickFirst(["ytmusic-player-bar tp-yt-paper-icon-button.next-button", "ytmusic-player-bar button.next-button", "ytmusic-player-bar .next-button"]);
       }
       if (command === "volume") {
         const volume = Math.max(0, Math.min(1, Number(${JSON.stringify(value ?? 0.8)})));
@@ -255,6 +254,22 @@ function musicControlScript(command: string, value?: number): string {
   `;
 }
 
+async function expandPlayerPageFromCurrentPlayback(source: string): Promise<void> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
+    return;
+  }
+
+  const result = await openPlayerPageForLyricsOnce(view.webContents, view.getBounds());
+  playerWindow?.webContents.send(
+    "player:status",
+    `Player page expand (${source}): ${result.reason}${result.expanded ? ", expanded" : ""}${result.lyricsClicked ? ", lyrics tab" : ""}`
+  );
+}
+
 async function sendMusicControl(command: string, value?: number): Promise<void> {
   const view = musicView;
   if (!view || view.webContents.isDestroyed()) {
@@ -264,138 +279,8 @@ async function sendMusicControl(command: string, value?: number): Promise<void> 
     return;
   }
   await view.webContents.executeJavaScript(musicControlScript(command, value), true);
-}
-
-function playerBarClickProbeScript(): string {
-  return `
-    (() => {
-      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-      const visible = (element) => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      };
-      const candidates = [
-        "ytmusic-player-bar yt-icon-button.toggle-player-page-button",
-        "ytmusic-player-bar .toggle-player-page-button button",
-        "ytmusic-player-bar button[aria-label*='開啟播放器頁面']",
-        "ytmusic-player-bar button[aria-label*='打开播放器页面']",
-        "ytmusic-player-bar button[aria-label*='Open player page' i]"
-      ];
-      for (const selector of candidates) {
-        const element = document.querySelector(selector);
-        if (visible(element)) {
-          const label = clean((element.getAttribute("title") || "") + " " + (element.getAttribute("aria-label") || ""));
-          if (/close|collapse|hide|關閉|关闭|收合/i.test(label)) return { x: -1, y: -1 };
-          const rect = element.getBoundingClientRect();
-          return {
-            x: Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2)),
-            y: Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2))
-          };
-        }
-      }
-      const bar = document.querySelector("ytmusic-player-bar");
-      if (!bar) return null;
-      const rect = bar.getBoundingClientRect();
-      return {
-        x: Math.max(1, Math.min(window.innerWidth - 2, rect.right - 18)),
-        y: Math.max(1, Math.min(window.innerHeight - 2, rect.top + Math.max(rect.height / 2, 24)))
-      };
-    })();
-  `;
-}
-
-function shouldExpandForLyricsScript(): string {
-  return `
-    (() => {
-      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-      const visible = (element) => {
-        if (!element) return false;
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      };
-      const playPause = document.querySelector("ytmusic-player-bar .play-pause-button, ytmusic-player-bar #play-pause-button");
-      const label = clean((playPause?.getAttribute("title") || "") + " " + (playPause?.getAttribute("aria-label") || "")).toLowerCase();
-      const video = document.querySelector("video");
-      const isPlaying =
-        label.includes("pause") ||
-        label.includes("暫停") ||
-        Boolean(video && !video.paused && !video.ended);
-      const hasLyricsSurface = Boolean(
-        Array.from(document.querySelectorAll(
-          "#blyrics-wrapper, .blyrics-wrapper, .blyrics-container, ytmusic-lyrics-renderer, ytmusic-tab-renderer[page-type='MUSIC_PAGE_TYPE_TRACK_LYRICS'], ytmusic-player-page tp-yt-paper-tab, ytmusic-player-page [role='tab']"
-        )).some(visible)
-      );
-      return isPlaying && !hasLyricsSurface;
-    })();
-  `;
-}
-
-async function trustedClickMusicView(point: { x: number; y: number }): Promise<void> {
-  const view = musicView;
-  if (!view || view.webContents.isDestroyed()) {
-    return;
-  }
-
-  view.webContents.sendInputEvent({
-    type: "mouseMove",
-    x: Math.round(point.x),
-    y: Math.round(point.y)
-  });
-  view.webContents.sendInputEvent({
-    type: "mouseDown",
-    x: Math.round(point.x),
-    y: Math.round(point.y),
-    button: "left",
-    clickCount: 1
-  });
-  view.webContents.sendInputEvent({
-    type: "mouseUp",
-    x: Math.round(point.x),
-    y: Math.round(point.y),
-    button: "left",
-    clickCount: 1
-  });
-}
-
-async function trustedClickMusicViewBottomBar(): Promise<void> {
-  const view = musicView;
-  if (!view || view.webContents.isDestroyed()) {
-    return;
-  }
-
-  const bounds = view.getBounds();
-  const x = Math.round(Math.min(bounds.width - 80, Math.max(180, bounds.width * 0.46)));
-  const y = Math.round(Math.max(1, bounds.height - 34));
-  await trustedClickMusicView({ x, y });
-}
-
-async function trustedClickPlayerBarExpand(): Promise<void> {
-  const view = musicView;
-  if (!view || view.webContents.isDestroyed()) {
-    return;
-  }
-  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
-    return;
-  }
-
-  await trustedClickMusicViewBottomBar();
-}
-
-async function expandPlayerForLyricsIfNeeded(): Promise<void> {
-  const view = musicView;
-  if (!view || view.webContents.isDestroyed()) {
-    return;
-  }
-  if (!view.webContents.getURL().startsWith("https://music.youtube.com")) {
-    return;
-  }
-
-  const shouldExpand = await view.webContents.executeJavaScript(shouldExpandForLyricsScript(), true) as boolean;
-  if (shouldExpand) {
-    await trustedClickPlayerBarExpand();
+  if (["play-pause", "previous", "next"].includes(command)) {
+    await expandPlayerPageFromCurrentPlayback(`overlay-${command}`);
   }
 }
 
@@ -451,7 +336,9 @@ function createMusicView(): void {
 function publishLyricsPayload(payload: LyricsPayload): void {
   latestLyrics = payload;
   overlayWindow?.webContents.send("lyrics:update", latestLyrics);
-  lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
+  if (splitOverlayWindowsEnabled) {
+    lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
+  }
 }
 
 function lyricsSignature(payload: LyricsPayload): string {
@@ -513,64 +400,25 @@ function syncOverlayWindowBounds(): void {
   const toolbarHeight = overlayToolbarHeight();
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.setBounds({
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: toolbarHeight
-    });
+    overlayWindow.setBounds(splitOverlayWindowsEnabled
+      ? {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: toolbarHeight
+        }
+      : bounds);
   }
 
-  if (lyricsWindow && !lyricsWindow.isDestroyed()) {
+  if (splitOverlayWindowsEnabled && lyricsWindow && !lyricsWindow.isDestroyed()) {
     lyricsWindow.setBounds(bounds);
   }
 
-  positionResizeHandleWindows();
   positionSettingsWindow();
 }
 
-function resizeHandleDefinitions(bounds: Required<OverlayBounds>): Array<{ edge: ResizeEdge; x: number; y: number; width: number; height: number }> {
-  const t = resizeHandleThickness;
-  const c = resizeCornerSize;
-  return [
-    { edge: "n", x: bounds.x + c, y: bounds.y, width: Math.max(1, bounds.width - c * 2), height: t },
-    { edge: "s", x: bounds.x + c, y: bounds.y + bounds.height - t, width: Math.max(1, bounds.width - c * 2), height: t },
-    { edge: "e", x: bounds.x + bounds.width - t, y: bounds.y + c, width: t, height: Math.max(1, bounds.height - c * 2) },
-    { edge: "w", x: bounds.x, y: bounds.y + c, width: t, height: Math.max(1, bounds.height - c * 2) },
-    { edge: "nw", x: bounds.x, y: bounds.y, width: c, height: c },
-    { edge: "ne", x: bounds.x + bounds.width - c, y: bounds.y, width: c, height: c },
-    { edge: "sw", x: bounds.x, y: bounds.y + bounds.height - c, width: c, height: c },
-    { edge: "se", x: bounds.x + bounds.width - c, y: bounds.y + bounds.height - c, width: c, height: c }
-  ];
-}
-
-function positionResizeHandleWindows(): void {
-  if (resizeHandleWindows.length === 0) {
-    return;
-  }
-
-  const bounds = currentOverlayBounds();
-  const definitions = resizeHandleDefinitions(bounds);
-  for (const definition of definitions) {
-    const handle = resizeHandleWindows.find((window) => !window.isDestroyed() && window.getTitle() === `resize-${definition.edge}`);
-    handle?.setBounds({
-      x: Math.round(definition.x),
-      y: Math.round(definition.y),
-      width: Math.round(definition.width),
-      height: Math.round(definition.height)
-    });
-    handle?.setAlwaysOnTop(true, "screen-saver");
-  }
-}
-
-function closeResizeHandleWindows(): void {
-  const handles = resizeHandleWindows;
-  resizeHandleWindows = [];
-  for (const handle of handles) {
-    if (!handle.isDestroyed()) {
-      handle.close();
-    }
-  }
+function updateOverlayWindowShape(): void {
+  void resizeHandleThickness;
 }
 
 async function pollLyricsFromMusicView(): Promise<void> {
@@ -979,54 +827,56 @@ function createOverlayWindow(): void {
   const minSize = state.settings.compactMode ? compactOverlayMinSize : normalOverlayMinSize;
   const toolbarHeight = overlayToolbarHeight();
 
-  lyricsWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    minWidth: minSize.width,
-    minHeight: minSize.height,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    hasShadow: false,
-    title: "YT Music Lyrics Overlay",
-    backgroundColor: "#00000000",
-    webPreferences: {
-      preload: preloadPath("overlay-preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  });
+  if (splitOverlayWindowsEnabled) {
+    lyricsWindow = new BrowserWindow({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      minWidth: minSize.width,
+      minHeight: minSize.height,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      title: "YT Music Lyrics Overlay",
+      backgroundColor: "#00000000",
+      webPreferences: {
+        preload: preloadPath("overlay-preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
 
-  lyricsWindow.setAlwaysOnTop(true, "screen-saver");
-  lyricsWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  lyricsWindow.setIgnoreMouseEvents(true, { forward: true });
-  lyricsWindow.loadFile(rendererPath("overlay-lyrics.html"));
+    lyricsWindow.setAlwaysOnTop(true, "screen-saver");
+    lyricsWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    lyricsWindow.setIgnoreMouseEvents(true, { forward: true });
+    lyricsWindow.loadFile(rendererPath("overlay-lyrics.html"));
 
-  lyricsWindow.webContents.on("console-message", (event) => {
-    playerWindow?.webContents.send("player:status", `Lyrics overlay console: ${event.message}`);
-  });
+    lyricsWindow.webContents.on("console-message", (event) => {
+      playerWindow?.webContents.send("player:status", `Lyrics overlay console: ${event.message}`);
+    });
 
-  lyricsWindow.webContents.on("did-finish-load", () => {
-    lyricsWindow?.webContents.send("overlay:settings", state.settings);
-    lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
-  });
+    lyricsWindow.webContents.on("did-finish-load", () => {
+      lyricsWindow?.webContents.send("overlay:settings", state.settings);
+      lyricsWindow?.webContents.send("lyrics:update", latestLyrics);
+    });
 
-  lyricsWindow.on("closed", () => {
-    lyricsWindow = null;
-  });
+    lyricsWindow.on("closed", () => {
+      lyricsWindow = null;
+    });
+  }
 
   overlayWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
-    height: toolbarHeight,
+    height: splitOverlayWindowsEnabled ? toolbarHeight : bounds.height,
     minWidth: minSize.width,
-    minHeight: toolbarHeight,
-    maxHeight: toolbarHeight,
+    minHeight: splitOverlayWindowsEnabled ? toolbarHeight : minSize.height,
+    maxHeight: splitOverlayWindowsEnabled ? toolbarHeight : undefined,
     frame: false,
     transparent: true,
     resizable: !state.settings.locked,
@@ -1044,10 +894,12 @@ function createOverlayWindow(): void {
 
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  overlayWindow.setMinimumSize(minSize.width, toolbarHeight);
-  overlayWindow.setMaximumSize(10000, toolbarHeight);
+  overlayWindow.setMinimumSize(minSize.width, splitOverlayWindowsEnabled ? toolbarHeight : minSize.height);
+  if (splitOverlayWindowsEnabled) {
+    overlayWindow.setMaximumSize(10000, toolbarHeight);
+  }
   overlayWindow.setIgnoreMouseEvents(false);
-  overlayWindow.loadFile(rendererPath("overlay-toolbar.html"));
+  overlayWindow.loadFile(rendererPath(splitOverlayWindowsEnabled ? "overlay-toolbar.html" : "overlay.html"));
 
   overlayWindow.webContents.on("console-message", (event) => {
     playerWindow?.webContents.send("player:status", `Toolbar overlay console: ${event.message}`);
@@ -1061,61 +913,17 @@ function createOverlayWindow(): void {
   overlayWindow.on("move", rememberOverlayBounds);
   overlayWindow.on("moved", rememberOverlayBounds);
   overlayWindow.on("resize", rememberOverlayBounds);
-  overlayWindow.on("resized", rememberOverlayBounds);
+  overlayWindow.on("resized", () => {
+    rememberOverlayBounds();
+  });
   overlayWindow.on("close", () => {
     rememberOverlayBounds();
-    closeResizeHandleWindows();
     lyricsWindow?.close();
   });
   overlayWindow.on("closed", () => {
     settingsWindow?.close();
     overlayWindow = null;
   });
-
-  createResizeHandleWindows();
-}
-
-function createResizeHandleWindows(): void {
-  closeResizeHandleWindows();
-  const definitions = resizeHandleDefinitions(currentOverlayBounds());
-
-  for (const definition of definitions) {
-    const handleWindow = new BrowserWindow({
-      x: Math.round(definition.x),
-      y: Math.round(definition.y),
-      width: Math.round(definition.width),
-      height: Math.round(definition.height),
-      frame: false,
-      transparent: true,
-      resizable: false,
-      movable: false,
-      minimizable: false,
-      maximizable: false,
-      closable: false,
-      focusable: false,
-      skipTaskbar: true,
-      alwaysOnTop: true,
-      hasShadow: false,
-      title: `resize-${definition.edge}`,
-      backgroundColor: "#00000000",
-      show: !state.settings.locked,
-      webPreferences: {
-        preload: preloadPath("overlay-preload.js"),
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    });
-
-    handleWindow.setAlwaysOnTop(true, "screen-saver");
-    handleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    handleWindow.loadFile(rendererPath("resize-handle.html"), {
-      query: { edge: definition.edge }
-    });
-    handleWindow.on("closed", () => {
-      resizeHandleWindows = resizeHandleWindows.filter((window) => window !== handleWindow);
-    });
-    resizeHandleWindows.push(handleWindow);
-  }
 }
 
 function createSettingsWindow(anchor?: { x: number; y: number; width: number; height: number }): void {
@@ -1220,81 +1028,18 @@ function rememberOverlayBounds(): void {
   persist();
 }
 
-function boundsForResize(edge: ResizeEdge, startBounds: Required<OverlayBounds>, deltaX: number, deltaY: number): Required<OverlayBounds> {
-  const minSize = state.settings.compactMode ? compactOverlayMinSize : normalOverlayMinSize;
-  let { x, y, width, height } = startBounds;
-
-  if (edge.includes("e")) {
-    width = Math.max(minSize.width, startBounds.width + deltaX);
-  }
-  if (edge.includes("s")) {
-    height = Math.max(minSize.height, startBounds.height + deltaY);
-  }
-  if (edge.includes("w")) {
-    const nextWidth = Math.max(minSize.width, startBounds.width - deltaX);
-    x = startBounds.x + (startBounds.width - nextWidth);
-    width = nextWidth;
-  }
-  if (edge.includes("n")) {
-    const nextHeight = Math.max(minSize.height, startBounds.height - deltaY);
-    y = startBounds.y + (startBounds.height - nextHeight);
-    height = nextHeight;
-  }
-
-  return sanitizeOverlayBounds({ x, y, width, height }, state.settings.compactMode);
-}
-
-function storeOverlayBounds(bounds: Required<OverlayBounds>): void {
-  if (state.settings.compactMode) {
-    state.compactBounds = bounds;
-  } else {
-    state.bounds = bounds;
-  }
-}
-
-function beginOverlayResize(edge: ResizeEdge, point: { x: number; y: number }): void {
-  if (state.settings.locked) {
-    return;
-  }
-  overlayResizeState = {
-    edge,
-    startX: point.x,
-    startY: point.y,
-    bounds: currentOverlayBounds()
-  };
-}
-
-function updateOverlayResize(point: { x: number; y: number }): void {
-  if (!overlayResizeState) {
-    return;
-  }
-
-  const nextBounds = boundsForResize(
-    overlayResizeState.edge,
-    overlayResizeState.bounds,
-    point.x - overlayResizeState.startX,
-    point.y - overlayResizeState.startY
-  );
-  storeOverlayBounds(nextBounds);
-  syncOverlayWindowBounds();
-}
-
-function endOverlayResize(): void {
-  if (!overlayResizeState) {
-    return;
-  }
-  overlayResizeState = null;
-  persist();
-}
-
 function applyOverlayModeMinSize(compactMode: boolean): void {
   if (!overlayWindow) {
     return;
   }
   const minSize = compactMode ? compactOverlayMinSize : normalOverlayMinSize;
   const toolbarHeight = compactMode ? compactToolbarHeight : normalToolbarHeight;
-  overlayWindow.setMinimumSize(minSize.width, toolbarHeight);
-  overlayWindow.setMaximumSize(10000, toolbarHeight);
+  overlayWindow.setMinimumSize(minSize.width, splitOverlayWindowsEnabled ? toolbarHeight : minSize.height);
+  if (splitOverlayWindowsEnabled) {
+    overlayWindow.setMaximumSize(10000, toolbarHeight);
+  } else {
+    overlayWindow.setMaximumSize(10000, 10000);
+  }
   lyricsWindow?.setMinimumSize(minSize.width, minSize.height);
 }
 
@@ -1315,15 +1060,7 @@ function updateOverlaySettings(settings: OverlaySettings): void {
   state.settings = settings;
   applyOverlayModeMinSize(settings.compactMode);
   overlayWindow?.setResizable(!settings.locked);
-  for (const handle of resizeHandleWindows) {
-    if (!handle.isDestroyed()) {
-      if (settings.locked) {
-        handle.hide();
-      } else {
-        handle.showInactive();
-      }
-    }
-  }
+  updateOverlayWindowShape();
 
   if (modeChanged) {
     const targetBounds = willBeCompact ? state.compactBounds : state.bounds;
@@ -1360,15 +1097,6 @@ function wireIpc(): void {
     publishLyricsPayload(payload);
   });
 
-  ipcMain.on("ytmusic:trusted-click-player-bar", () => {
-    trustedClickPlayerBarExpand().catch((error) => {
-      playerWindow?.webContents.send(
-        "player:status",
-        `Player page expand click failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
-  });
-
   ipcMain.on("overlay:update-settings", (_event, settings: OverlaySettings) => {
     updateOverlaySettings(settings);
   });
@@ -1380,18 +1108,6 @@ function wireIpc(): void {
   ipcMain.on("overlay:toolbar-hover", (_event, hovered: boolean) => {
     overlayWindow?.webContents.send("overlay:toolbar-hover", hovered);
     lyricsWindow?.webContents.send("overlay:toolbar-hover", hovered);
-  });
-
-  ipcMain.on("overlay:begin-resize", (_event, edge: ResizeEdge, point: { x: number; y: number }) => {
-    beginOverlayResize(edge, point);
-  });
-
-  ipcMain.on("overlay:update-resize", (_event, point: { x: number; y: number }) => {
-    updateOverlayResize(point);
-  });
-
-  ipcMain.on("overlay:end-resize", () => {
-    endOverlayResize();
   });
 
   ipcMain.on("overlay:toggle-settings-panel", (_event, rect: { x: number; y: number; width: number; height: number }) => {
@@ -1407,6 +1123,18 @@ function wireIpc(): void {
       playerWindow?.webContents.send(
         "player:status",
         `Music control failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  });
+
+  ipcMain.on("ytmusic:player-control-activated", (_event, command: string) => {
+    if (!["play-pause", "previous", "next"].includes(command)) {
+      return;
+    }
+    expandPlayerPageFromCurrentPlayback(`native-${command}`).catch((error) => {
+      playerWindow?.webContents.send(
+        "player:status",
+        `Native player expand failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
   });

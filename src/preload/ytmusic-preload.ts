@@ -12,28 +12,6 @@ const ACTIVE_LINE_HINTS = [
 
 let lastSignature = "";
 let publishTimer: number | null = null;
-let lastAutoLyricsClickAt = 0;
-let lastAutoLyricsTitle = "";
-let lyricsTabRetryTimer: number | null = null;
-const MUSIC_STATE_SELECTOR = [
-  "ytmusic-player-page",
-  "ytmusic-player-bar",
-  "ytmusic-player",
-  "tp-yt-paper-tab",
-  ".blyrics-container"
-].join(",");
-
-function clickElementAtCenter(element: HTMLElement): void {
-  const rect = element.getBoundingClientRect();
-  const x = Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2));
-  const y = Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2));
-  element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: x, clientY: y }));
-  element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
-  element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x, clientY: y }));
-  element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
-  element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: x, clientY: y }));
-  element.click();
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -43,9 +21,19 @@ function isInstrumentalText(text: string): boolean {
   return /^(?:[\u266a\u266b\u266c]+|instrumental|\u9593\u594f|\u7eaf\u97f3\u4e50|\u7d14\u97f3\u6a02)$/i.test(text.trim());
 }
 
-function isInstrumentalElement(element: Element, text: string): boolean {
-  const className = String(element.className).toLowerCase();
-  return isInstrumentalText(text) || (className.includes("instrumental") && text.length <= 32);
+function isInstrumentalElement(_element: Element, text: string): boolean {
+  return isInstrumentalText(cleanText(text));
+}
+
+function hasEmptyInstrumentalClass(element: Element, text: string): boolean {
+  if (cleanText(text)) {
+    return false;
+  }
+
+  return Array.from(element.classList).some((className) => {
+    const normalized = className.toLowerCase();
+    return normalized.includes("instrumental") && !normalized.includes("non-instrumental");
+  });
 }
 
 function extractBetterLyricsText(element: Element): string {
@@ -192,6 +180,7 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
 
   const seen = new Set<string>();
   const lines: LyricLine[] = [];
+  let emptyInstrumentalVisible = false;
 
   for (const element of candidates) {
     const className = String(element.className).toLowerCase();
@@ -207,14 +196,16 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     }
 
     const text = extractBetterLyricsText(element);
+    if (isInstrumentalElement(element, text)) {
+      return [{ text: "\u266a", active: true }];
+    }
+    emptyInstrumentalVisible = emptyInstrumentalVisible || hasEmptyInstrumentalClass(element, text);
+
     if (!text || text.length > 220 || seen.has(text)) {
       continue;
     }
 
     const active = isBetterLyricsActive(element);
-    if (active && isInstrumentalElement(element, text)) {
-      return [{ text: "\u266a", active: true }];
-    }
     seen.add(text);
     lines.push({
       text,
@@ -227,6 +218,10 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     return lines;
   }
 
+  if (emptyInstrumentalVisible) {
+    return [{ text: "\u266a", active: true }];
+  }
+
   const activeElement = betterLyricsContainer.querySelector<HTMLElement>(".blyrics--line.blyrics--animating") ??
     Array.from(betterLyricsContainer.querySelectorAll<HTMLElement>(".blyrics--active"))
       .find((element) => !element.matches(".blyrics--pre-animating") && !element.querySelector(".blyrics--pre-animating"));
@@ -235,6 +230,9 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
   );
   const activeText = activeLineElement ? extractBetterLyricsText(activeLineElement) : activeElement ? extractBetterLyricsText(activeElement) : "";
   if (activeLineElement && isInstrumentalElement(activeLineElement, activeText)) {
+    return [{ text: "\u266a", active: true }];
+  }
+  if (activeLineElement && hasEmptyInstrumentalClass(activeLineElement, activeText)) {
     return [{ text: "\u266a", active: true }];
   }
   if (activeText) {
@@ -265,9 +263,15 @@ function collectLyricLines(container: Element | null): LyricLine[] {
 
   const seen = new Set<string>();
   const lines: LyricLine[] = [];
+  let emptyInstrumentalVisible = false;
 
   for (const element of nodes) {
     const text = cleanText(element.textContent);
+    if (isInstrumentalElement(element, text)) {
+      return [{ text: "\u266a", active: true }];
+    }
+    emptyInstrumentalVisible = emptyInstrumentalVisible || hasEmptyInstrumentalClass(element, text);
+
     if (!text || text.length > 220 || seen.has(text)) {
       continue;
     }
@@ -282,6 +286,10 @@ function collectLyricLines(container: Element | null): LyricLine[] {
       text,
       active: hasActiveHint(element) || hasActiveHint(element.parentElement ?? element)
     });
+  }
+
+  if (lines.length === 0 && emptyInstrumentalVisible) {
+    return [{ text: "\u266a", active: true }];
   }
 
   return lines.slice(0, 120);
@@ -303,218 +311,6 @@ function getPlaybackState(): boolean {
   return Boolean(video && !video.paused && !video.ended);
 }
 
-function getVolumeState(): { volume: number; muted: boolean } {
-  const media = document.querySelector<HTMLMediaElement>("video, audio");
-  const slider = document.querySelector<HTMLElement>(
-    "ytmusic-player-bar tp-yt-paper-slider#volume-slider, ytmusic-player-bar #volume-slider, ytmusic-player-bar tp-yt-paper-slider"
-  );
-  const sliderLike = slider as unknown as { value?: number; immediateValue?: number } | null;
-  const rawSliderValue =
-    slider?.getAttribute("aria-valuenow") ??
-    slider?.getAttribute("value") ??
-    String(sliderLike?.immediateValue ?? sliderLike?.value ?? "");
-  const sliderValue = Number(rawSliderValue);
-  const mediaVolume = media ? media.volume : NaN;
-  const volume = Number.isFinite(sliderValue)
-    ? Math.max(0, Math.min(1, sliderValue > 1 ? sliderValue / 100 : sliderValue))
-    : Number.isFinite(mediaVolume)
-      ? Math.max(0, Math.min(1, mediaVolume))
-      : 0.8;
-  return {
-    volume,
-    muted: Boolean(media?.muted || volume <= 0)
-  };
-}
-
-function isLyricsTabElement(element: Element): boolean {
-  const text = cleanText(element.textContent);
-  const label = cleanText(`${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`);
-  return /lyrics|歌詞|歌词/i.test(`${text} ${label}`);
-}
-
-function isLyricsTabActive(element: Element): boolean {
-  if (hasActiveHint(element)) {
-    return true;
-  }
-  const tab = element.closest("tp-yt-paper-tab, ytmusic-tab-renderer, [role='tab']");
-  return Boolean(tab && hasActiveHint(tab));
-}
-
-function visibleLyricsTabs(): HTMLElement[] {
-  return Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "ytmusic-player-page tp-yt-paper-tab, ytmusic-player-page ytmusic-tab-renderer, ytmusic-player-page [role='tab']"
-    )
-  )
-    .filter(isLyricsTabElement)
-    .filter((element) => isVisible(element));
-}
-
-function isPlayerPageExpanded(): boolean {
-  return visibleLyricsTabs().length > 0 || Array.from(
-    document.querySelectorAll<HTMLElement>("ytmusic-player-page tp-yt-paper-tab, ytmusic-player-page [role='tab']")
-  ).some(isVisible);
-}
-
-function autoExpandPlayerPage(): boolean {
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      [
-        "ytmusic-player-bar .expand-button",
-        "ytmusic-player-bar #expand-button",
-        "ytmusic-player-bar tp-yt-paper-icon-button[title*='Expand' i]",
-        "ytmusic-player-bar tp-yt-paper-icon-button[aria-label*='Expand' i]",
-        "ytmusic-player-bar tp-yt-paper-icon-button[title*='展開' i]",
-        "ytmusic-player-bar tp-yt-paper-icon-button[aria-label*='展開' i]",
-        "ytmusic-player-bar tp-yt-paper-icon-button[title*='展开' i]",
-        "ytmusic-player-bar tp-yt-paper-icon-button[aria-label*='展开' i]"
-      ].join(", ")
-    )
-  ).filter(isVisible);
-
-  const button = candidates[0];
-  if (!button) {
-    return false;
-  }
-
-  button.click();
-  return true;
-}
-
-function robustAutoExpandPlayerPage(): boolean {
-  ipcRenderer.send("ytmusic:trusted-click-player-bar");
-  return true;
-
-  /*
-  const explicitButton = document.querySelector<HTMLElement>(
-    [
-      "ytmusic-player-bar yt-icon-button.toggle-player-page-button",
-      "ytmusic-player-bar .toggle-player-page-button button",
-      "ytmusic-player-bar button[aria-label*='開啟播放器頁面']",
-      "ytmusic-player-bar button[aria-label*='打开播放器页面']",
-      "ytmusic-player-bar button[aria-label*='Open player page' i]",
-      "ytmusic-player-bar #expand-player-page-button",
-      "ytmusic-player-bar .expand-player-page-button",
-      "ytmusic-player-bar .toggle-player-page-button"
-    ].join(", ")
-  );
-  if (explicitButton && isVisible(explicitButton)) {
-    clickElementAtCenter(explicitButton);
-    return true;
-  }
-
-  const bar = document.querySelector<HTMLElement>("ytmusic-player-bar");
-  if (bar && isVisible(bar)) {
-    const rect = bar.getBoundingClientRect();
-    const target = document.elementFromPoint(rect.right - 34, rect.top + rect.height / 2) as HTMLElement | null;
-    const button = target?.closest<HTMLElement>("button, tp-yt-paper-icon-button, yt-icon-button, [role='button']");
-    if (button && bar.contains(button)) {
-      clickElementAtCenter(button);
-      return true;
-    }
-
-    clickElementAtCenter(bar);
-    return true;
-  }
-
-  const buttons = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      [
-        "ytmusic-player-bar #expand-player-page-button",
-        "ytmusic-player-bar .expand-player-page-button",
-        "ytmusic-player-bar .toggle-player-page-button",
-        "ytmusic-player-bar button[aria-label*='開啟播放器頁面']",
-        "ytmusic-player-bar button[aria-label*='打开播放器页面']",
-        "ytmusic-player-bar [icon='yt-icons:expand-less']",
-        "ytmusic-player-bar [icon='expand_less']",
-        "ytmusic-player-bar button",
-        "ytmusic-player-bar tp-yt-paper-icon-button",
-        "ytmusic-player-bar yt-icon-button",
-        "ytmusic-player-bar [role='button']"
-      ].join(", ")
-    )
-  ).filter(isVisible);
-  const expandWords = /expand|open player|show player|full player|展開|展开|開啟播放器|打开播放器|顯示播放器|显示播放器/i;
-  const iconWords = /expand_less|keyboard_arrow_up|arrow_drop_up|unfold_more/i;
-  const button = buttons.find((candidate) => {
-    const text = cleanText(candidate.textContent);
-    const label = cleanText(
-      `${candidate.id} ${candidate.className} ${candidate.getAttribute("title") ?? ""} ${candidate.getAttribute("aria-label") ?? ""} ${candidate.getAttribute("icon") ?? ""}`
-    );
-    return expandWords.test(`${text} ${label}`) || iconWords.test(`${text} ${label}`);
-  }) ?? buttons
-    .filter((candidate) => {
-      const rect = candidate.getBoundingClientRect();
-      return rect.width >= 24 && rect.height >= 24;
-    })
-    .sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
-
-  if (!button) {
-    return false;
-  }
-
-  clickElementAtCenter(button);
-  return true;
-  */
-}
-
-function autoOpenLyricsTab(title: string, isPlaying: boolean, expandedAttempted = false): void {
-  if (!isPlaying || !title) {
-    return;
-  }
-
-  const now = Date.now();
-  if (!expandedAttempted && title === lastAutoLyricsTitle && now - lastAutoLyricsClickAt < 8000) {
-    return;
-  }
-
-  const hasLyricsSurface = Boolean(findLyricsContainer());
-
-  if (!expandedAttempted && !hasLyricsSurface) {
-    if (robustAutoExpandPlayerPage() || autoExpandPlayerPage()) {
-      lastAutoLyricsClickAt = now;
-      lastAutoLyricsTitle = title;
-      scheduleLyricsTabRetry(title);
-    }
-    return;
-  }
-
-  const candidates = visibleLyricsTabs();
-
-  if (candidates.length === 0) {
-    return;
-  }
-
-  const target = candidates.find((element) => !isLyricsTabActive(element));
-  const clickable = target?.closest<HTMLElement>("tp-yt-paper-tab, ytmusic-tab-renderer, [role='tab']") ?? target;
-  if (!clickable) {
-    return;
-  }
-
-  lastAutoLyricsClickAt = now;
-  lastAutoLyricsTitle = title;
-  clickable.click();
-}
-
-function scheduleLyricsTabRetry(title: string): void {
-  if (lyricsTabRetryTimer !== null) {
-    window.clearTimeout(lyricsTabRetryTimer);
-    lyricsTabRetryTimer = null;
-  }
-
-  let attempts = 0;
-  const retry = () => {
-    lyricsTabRetryTimer = null;
-    attempts += 1;
-    autoOpenLyricsTab(title, getPlaybackState(), true);
-    if (attempts < 5 && visibleLyricsTabs().length === 0 && getPlaybackState()) {
-      lyricsTabRetryTimer = window.setTimeout(retry, 700);
-    }
-  };
-
-  lyricsTabRetryTimer = window.setTimeout(retry, 900);
-}
-
 function collectPayload(): LyricsPayload {
   if (!location.hostname.endsWith("music.youtube.com")) {
     return makePayload("not-youtube-music", [], -1, "This page is not YouTube Music.");
@@ -528,7 +324,6 @@ function collectPayload(): LyricsPayload {
     "ytmusic-player-bar yt-formatted-string.title",
     ".content-info-wrapper .title"
   ]);
-  autoOpenLyricsTab(title, isPlaying);
   const container = findLyricsContainer();
   const lines = collectLyricLines(container);
   const activeIndex = lines.findIndex((line) => line.active);
@@ -553,7 +348,6 @@ function collectPayload(): LyricsPayload {
 }
 
 function makePayload(status: LyricsStatus, lines: LyricLine[], activeIndex: number, message: string): LyricsPayload {
-  const volumeState = getVolumeState();
   const subtitle = firstText([
     "ytmusic-player-bar .subtitle",
     "ytmusic-player-bar .subtitle yt-formatted-string",
@@ -575,8 +369,8 @@ function makePayload(status: LyricsStatus, lines: LyricLine[], activeIndex: numb
     artist,
     album,
     isPlaying: getPlaybackState(),
-    volume: volumeState.volume,
-    muted: volumeState.muted,
+    volume: 0.8,
+    muted: false,
     lines,
     activeIndex,
     message,
@@ -591,8 +385,6 @@ function publish(): void {
     title: payload.title,
     artist: payload.artist,
     isPlaying: payload.isPlaying,
-    volume: payload.volume,
-    muted: payload.muted,
     activeIndex: payload.activeIndex,
     lineCount: payload.lines.length,
     activeText: payload.lines[payload.activeIndex]?.text ?? "",
@@ -617,33 +409,9 @@ function schedulePublish(delay = 150): void {
   }, delay);
 }
 
-function mutationTouchesMusicState(mutations: MutationRecord[]): boolean {
-  return mutations.some((mutation) => {
-    const target = mutation.target;
-    if (target instanceof Element && target.closest(MUSIC_STATE_SELECTOR)) {
-      return true;
-    }
-
-    for (const node of Array.from(mutation.addedNodes)) {
-      if (
-        node instanceof Element &&
-        (node.matches(MUSIC_STATE_SELECTOR) || Boolean(node.querySelector(MUSIC_STATE_SELECTOR)))
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  });
-}
-
 window.addEventListener("DOMContentLoaded", () => {
   publish();
-  const observer = new MutationObserver((mutations) => {
-    if (mutationTouchesMusicState(mutations)) {
-      schedulePublish();
-    }
-  });
+  const observer = new MutationObserver(() => schedulePublish());
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
