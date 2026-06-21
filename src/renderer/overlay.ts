@@ -26,6 +26,13 @@ interface LyricsPayload {
   updatedAt: number;
 }
 
+interface PlayerState {
+  isPlaying: boolean;
+  volume: number;
+  muted: boolean;
+  updatedAt: number;
+}
+
 interface OverlaySettings {
   opacity: number;
   fontSize: number;
@@ -74,6 +81,7 @@ const fallbackSettings: OverlaySettings = {
 
 let settings: OverlaySettings = { ...fallbackSettings };
 let latestPayload: LyricsPayload | null = null;
+let latestPlayerState: PlayerState = { isPlaying: false, volume: 0.8, muted: false, updatedAt: Date.now() };
 let lastRenderedSignature = "";
 let volumeSyncHoldUntil = 0;
 let volumeEditing = false;
@@ -215,9 +223,9 @@ function renderSignature(payload: LyricsPayload): string {
     artist: payload.artist,
     album: payload.album ?? "",
     message: payload.message,
-    isPlaying: payload.isPlaying,
-    volume: payload.volume,
-    muted: payload.muted,
+    isPlaying: latestPlayerState.isPlaying || payload.isPlaying,
+    volume: latestPlayerState.volume,
+    muted: latestPlayerState.muted,
     activeIndex: payload.activeIndex,
     compactMode: settings.compactMode,
     hideBackgroundUntilHover: settings.hideBackgroundUntilHover,
@@ -245,8 +253,8 @@ function renderLyrics(payload: LyricsPayload, force = false): void {
   if (trackArtist) {
     trackArtist.textContent = trackDetail(payload);
   }
-  playPauseButton?.classList.toggle("is-playing", payload.isPlaying);
-  syncVolumeUi(payload);
+  playPauseButton?.classList.toggle("is-playing", latestPlayerState.isPlaying || payload.isPlaying);
+  syncVolumeUi(latestPlayerState);
   if (!lyrics) {
     return;
   }
@@ -301,7 +309,7 @@ function statusLabel(payload: LyricsPayload): string {
   return labels[payload.status] ?? label("synced");
 }
 
-function syncVolumeUi(payload: LyricsPayload): void {
+function syncVolumeUi(payload: PlayerState): void {
   if (!volumeInput || volumeEditing || Date.now() < volumeSyncHoldUntil) {
     return;
   }
@@ -313,6 +321,12 @@ function syncVolumeUi(payload: LyricsPayload): void {
   if (!muted && volumePercent > 0) {
     lastAudibleVolume = volumePercent;
   }
+}
+
+function applyPlayerState(payload: PlayerState): void {
+  latestPlayerState = payload;
+  playPauseButton?.classList.toggle("is-playing", payload.isPlaying);
+  syncVolumeUi(payload);
 }
 
 settingsToggle?.addEventListener("click", () => {
@@ -392,9 +406,11 @@ controls?.addEventListener("mouseleave", () => {
 async function bootOverlay(): Promise<void> {
   const state = await window.overlayApi.getState();
   applySettings(state.settings);
+  applyPlayerState(await window.overlayApi.getLatestPlayerState());
   renderLyrics(await window.overlayApi.getLatestLyrics());
   window.overlayApi.onSettings(applySettings);
   window.overlayApi.onLyrics(renderLyrics);
+  window.overlayApi.onPlayerState(applyPlayerState);
 }
 
 bootOverlay().catch((error) => {

@@ -10,6 +10,7 @@ export type LyricsStatus =
 export interface LyricLine {
   text: string;
   active: boolean;
+  time?: number;
 }
 
 export interface LyricsPayload {
@@ -23,6 +24,13 @@ export interface LyricsPayload {
   lines: LyricLine[];
   activeIndex: number;
   message: string;
+  updatedAt: number;
+}
+
+export interface PlayerState {
+  isPlaying: boolean;
+  volume: number;
+  muted: boolean;
   updatedAt: number;
 }
 
@@ -96,5 +104,12 @@ export const defaultLyricsPayload: LyricsPayload = {
   lines: [],
   activeIndex: -1,
   message: "Waiting for YouTube Music...",
+  updatedAt: Date.now()
+};
+
+export const defaultPlayerState: PlayerState = {
+  isPlaying: false,
+  volume: 0.8,
+  muted: false,
   updatedAt: Date.now()
 };

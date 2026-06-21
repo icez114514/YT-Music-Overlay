@@ -1,4 +1,4 @@
-import { LyricsPayload, OverlaySettings, PersistedState } from "../shared/types";
+import { LyricsPayload, OverlaySettings, PersistedState, PlayerState } from "../shared/types";
 
 declare global {
   interface Window {
@@ -14,7 +14,9 @@ declare global {
     overlayApi: {
       getState: () => Promise<PersistedState>;
       getLatestLyrics: () => Promise<LyricsPayload>;
+      getLatestPlayerState: () => Promise<PlayerState>;
       onLyrics: (callback: (payload: LyricsPayload) => void) => void;
+      onPlayerState: (callback: (payload: PlayerState) => void) => void;
       onSettings: (callback: (settings: OverlaySettings) => void) => void;
       updateSettings: (settings: OverlaySettings) => void;
       toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) => void;

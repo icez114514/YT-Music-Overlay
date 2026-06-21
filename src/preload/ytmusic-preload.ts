@@ -1,5 +1,5 @@
 import { ipcRenderer } from "electron";
-import { LyricsPayload, LyricLine, LyricsStatus } from "../shared/types";
+import { LyricsPayload, LyricLine, LyricsStatus, PlayerState } from "../shared/types";
 
 const ACTIVE_LINE_HINTS = [
   "selected",
@@ -11,7 +11,9 @@ const ACTIVE_LINE_HINTS = [
 ];
 
 let lastSignature = "";
+let lastPlayerStateSignature = "";
 let publishTimer: number | null = null;
+let playerStateTimer: number | null = null;
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -34,6 +36,49 @@ function hasEmptyInstrumentalClass(element: Element, text: string): boolean {
     const normalized = className.toLowerCase();
     return normalized.includes("instrumental") && !normalized.includes("non-instrumental");
   });
+}
+
+function readBetterLyricsTime(element: Element): number | undefined {
+  const timedElement = element.hasAttribute("data-time")
+    ? element
+    : element.querySelector("[data-time]");
+  const rawValue = timedElement?.getAttribute("data-time");
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function currentMediaTime(): number {
+  const media = document.querySelector<HTMLMediaElement>("video, audio");
+  return media && Number.isFinite(media.currentTime) ? media.currentTime : 0;
+}
+
+function applyTimedActiveLine(lines: LyricLine[]): boolean {
+  if (!lines.some((line) => typeof line.time === "number")) {
+    return false;
+  }
+
+  const now = currentMediaTime();
+  let activeIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const lineTime = lines[index]?.time;
+    if (typeof lineTime === "number" && lineTime <= now + 0.05) {
+      activeIndex = index;
+      break;
+    }
+  }
+
+  if (activeIndex < 0) {
+    return false;
+  }
+
+  lines.forEach((line, index) => {
+    line.active = index === activeIndex;
+  });
+  return true;
 }
 
 function extractBetterLyricsText(element: Element): string {
@@ -178,7 +223,6 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     .filter((element): element is HTMLElement => element instanceof HTMLElement)
     .filter((element) => isVisible(element));
 
-  const seen = new Set<string>();
   const lines: LyricLine[] = [];
   let emptyInstrumentalVisible = false;
 
@@ -201,20 +245,20 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     }
     emptyInstrumentalVisible = emptyInstrumentalVisible || hasEmptyInstrumentalClass(element, text);
 
-    if (!text || text.length > 220 || seen.has(text)) {
+    if (!text || text.length > 220) {
       continue;
     }
 
     const active = isBetterLyricsActive(element);
-    seen.add(text);
     lines.push({
       text,
-      active
+      active,
+      time: readBetterLyricsTime(element)
     });
   }
 
-  const activeIndex = lines.findIndex((line) => line.active);
-  if (activeIndex >= 0) {
+  const hasTimedActiveLine = applyTimedActiveLine(lines);
+  if (hasTimedActiveLine || lines.some((line) => line.active)) {
     return lines;
   }
 
@@ -240,7 +284,7 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     if (index >= 0) {
       lines[index].active = true;
     } else {
-      lines.push({ text: activeText, active: true });
+      lines.push({ text: activeText, active: true, time: activeLineElement ? readBetterLyricsTime(activeLineElement) : undefined });
     }
   }
 
@@ -261,7 +305,6 @@ function collectLyricLines(container: Element | null): LyricLine[] {
     container.querySelectorAll("yt-formatted-string, div, span, p")
   ).filter((element) => isVisible(element));
 
-  const seen = new Set<string>();
   const lines: LyricLine[] = [];
   let emptyInstrumentalVisible = false;
 
@@ -272,7 +315,7 @@ function collectLyricLines(container: Element | null): LyricLine[] {
     }
     emptyInstrumentalVisible = emptyInstrumentalVisible || hasEmptyInstrumentalClass(element, text);
 
-    if (!text || text.length > 220 || seen.has(text)) {
+    if (!text || text.length > 220) {
       continue;
     }
 
@@ -281,7 +324,6 @@ function collectLyricLines(container: Element | null): LyricLine[] {
       continue;
     }
 
-    seen.add(text);
     lines.push({
       text,
       active: hasActiveHint(element) || hasActiveHint(element.parentElement ?? element)
@@ -309,6 +351,96 @@ function getPlaybackState(): boolean {
 
   const video = document.querySelector("video");
   return Boolean(video && !video.paused && !video.ended);
+}
+
+function getPlayerState(): PlayerState {
+  const media = document.querySelector<HTMLMediaElement>("video, audio");
+  const slider = document.querySelector<HTMLElement>(
+    "ytmusic-player-bar tp-yt-paper-slider#volume-slider, ytmusic-player-bar #volume-slider, ytmusic-player-bar tp-yt-paper-slider"
+  );
+  const sliderLike = slider as unknown as { value?: number; immediateValue?: number } | null;
+  const rawSliderValue =
+    slider?.getAttribute("aria-valuenow") ??
+    slider?.getAttribute("value") ??
+    String(sliderLike?.immediateValue ?? sliderLike?.value ?? "");
+  const sliderValue = Number(rawSliderValue);
+  const mediaVolume = media ? media.volume : NaN;
+  const volume = Number.isFinite(sliderValue)
+    ? Math.max(0, Math.min(1, sliderValue > 1 ? sliderValue / 100 : sliderValue))
+    : Number.isFinite(mediaVolume)
+      ? Math.max(0, Math.min(1, mediaVolume))
+      : 0.8;
+
+  return {
+    isPlaying: getPlaybackState(),
+    volume,
+    muted: Boolean(media?.muted || volume <= 0),
+    updatedAt: Date.now()
+  };
+}
+
+function publishPlayerState(): void {
+  const state = getPlayerState();
+  const signature = JSON.stringify({
+    isPlaying: state.isPlaying,
+    volume: state.volume,
+    muted: state.muted
+  });
+
+  if (signature === lastPlayerStateSignature) {
+    return;
+  }
+
+  lastPlayerStateSignature = signature;
+  ipcRenderer.send("ytmusic:player-state", state);
+}
+
+function schedulePlayerStatePublish(delay = 80): void {
+  if (playerStateTimer !== null) {
+    return;
+  }
+  playerStateTimer = window.setTimeout(() => {
+    playerStateTimer = null;
+    publishPlayerState();
+  }, delay);
+}
+
+function eventTouchesPlayerControl(event: Event): boolean {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest(
+    [
+      "video",
+      "audio",
+      "ytmusic-player-bar .volume",
+      "ytmusic-player-bar #volume-slider",
+      "ytmusic-player-bar tp-yt-paper-slider",
+      "ytmusic-player-bar .play-pause-button",
+      "ytmusic-player-bar #play-pause-button",
+      "ytmusic-player-bar .previous-button",
+      "ytmusic-player-bar .next-button"
+    ].join(", ")
+  ));
+}
+
+function bindPlayerStateEvents(): void {
+  for (const eventName of ["volumechange", "play", "pause", "playing", "ended"]) {
+    document.addEventListener(eventName, () => schedulePlayerStatePublish(), true);
+  }
+
+  for (const eventName of ["input", "change", "click", "pointerup", "keyup"]) {
+    document.addEventListener(eventName, (event) => {
+      if (eventTouchesPlayerControl(event)) {
+        schedulePlayerStatePublish();
+      }
+    }, true);
+  }
+
+  window.setTimeout(() => schedulePlayerStatePublish(0), 300);
+  window.setTimeout(() => schedulePlayerStatePublish(0), 1800);
 }
 
 function collectPayload(): LyricsPayload {
@@ -411,6 +543,7 @@ function schedulePublish(delay = 150): void {
 
 window.addEventListener("DOMContentLoaded", () => {
   publish();
+  bindPlayerStateEvents();
   const observer = new MutationObserver(() => schedulePublish());
   observer.observe(document.documentElement, {
     childList: true,

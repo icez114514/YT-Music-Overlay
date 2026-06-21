@@ -1,11 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { LyricsPayload, OverlaySettings, PersistedState } from "../shared/types";
+import { LyricsPayload, OverlaySettings, PersistedState, PlayerState } from "../shared/types";
 
 contextBridge.exposeInMainWorld("overlayApi", {
   getState: (): Promise<PersistedState> => ipcRenderer.invoke("app:get-state"),
   getLatestLyrics: (): Promise<LyricsPayload> => ipcRenderer.invoke("app:get-latest-lyrics"),
+  getLatestPlayerState: (): Promise<PlayerState> => ipcRenderer.invoke("app:get-latest-player-state"),
   onLyrics: (callback: (payload: LyricsPayload) => void) => {
     ipcRenderer.on("lyrics:update", (_event, payload: LyricsPayload) => callback(payload));
+  },
+  onPlayerState: (callback: (payload: PlayerState) => void) => {
+    ipcRenderer.on("player-state:update", (_event, payload: PlayerState) => callback(payload));
   },
   onSettings: (callback: (settings: OverlaySettings) => void) => {
     ipcRenderer.on("overlay:settings", (_event, settings: OverlaySettings) => callback(settings));
