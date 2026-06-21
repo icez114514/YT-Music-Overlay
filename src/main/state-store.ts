@@ -25,8 +25,13 @@ export function loadState(): PersistedState {
     }
 
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<PersistedState>;
+    const settings = { ...defaultSettings, ...parsed.settings };
+    if (parsed.settings?.backgroundBlur === 18) {
+      settings.backgroundBlur = 0;
+    }
+
     return {
-      settings: { ...defaultSettings, ...parsed.settings },
+      settings,
       bounds: { ...defaultState.bounds, ...parsed.bounds },
       compactBounds: { ...defaultState.compactBounds, ...parsed.compactBounds }
     };

@@ -42,7 +42,6 @@ interface OverlaySettings {
   horizontalPadding: number;
   lineGap: number;
   adjacentScale: number;
-  clickThrough: boolean;
   locked: boolean;
   showAdjacentLines: boolean;
   compactMode: boolean;
@@ -54,7 +53,7 @@ const fallbackSettings: OverlaySettings = {
   opacity: 0.82,
   fontSize: 34,
   width: 920,
-  backgroundBlur: 18,
+  backgroundBlur: 0,
   textShadow: 80,
   backgroundColor: "#101010",
   textColor: "#fffaf3",
@@ -66,7 +65,6 @@ const fallbackSettings: OverlaySettings = {
   horizontalPadding: 28,
   lineGap: 10,
   adjacentScale: 0.62,
-  clickThrough: false,
   locked: false,
   showAdjacentLines: true,
   compactMode: false,
@@ -77,7 +75,6 @@ const fallbackSettings: OverlaySettings = {
 let settings: OverlaySettings = { ...fallbackSettings };
 let latestPayload: LyricsPayload | null = null;
 let lastRenderedSignature = "";
-let titleBarInteractive = false;
 let volumeSyncHoldUntil = 0;
 let volumeEditing = false;
 
@@ -170,6 +167,7 @@ function applySettings(next: Partial<OverlaySettings>): void {
   root.style.setProperty("--line-gap", `${settings.lineGap}px`);
   root.classList.toggle("compact-mode", settings.compactMode);
   root.classList.toggle("hover-background", settings.hideBackgroundUntilHover);
+  root.classList.toggle("blur-enabled", settings.backgroundBlur > 0);
   root.classList.toggle("fully-transparent", settings.opacity <= 0);
 
   if (compactToggle) {
@@ -181,8 +179,6 @@ function applySettings(next: Partial<OverlaySettings>): void {
   setButtonLabel(playPauseButton, label("playPause"));
   setButtonLabel(nextButton, label("next"));
   document.querySelector<HTMLElement>(".volume-control")?.setAttribute("title", label("volume"));
-
-  window.overlayApi.setMouseEvents(settings.clickThrough && !titleBarInteractive);
 
   if (latestPayload) {
     renderLyrics(latestPayload, true);
@@ -305,23 +301,6 @@ function statusLabel(payload: LyricsPayload): string {
   return labels[payload.status] ?? label("synced");
 }
 
-function updateMousePassthrough(event: MouseEvent): void {
-  const target = event.target;
-  const overControls = target instanceof Element && Boolean(target.closest(".controls"));
-  if (overControls === titleBarInteractive) {
-    return;
-  }
-
-  titleBarInteractive = overControls;
-  window.overlayApi.setMouseEvents(settings.clickThrough && !titleBarInteractive);
-}
-
-document.addEventListener("mousemove", updateMousePassthrough);
-document.addEventListener("mouseleave", () => {
-  titleBarInteractive = false;
-  window.overlayApi.setMouseEvents(settings.clickThrough);
-});
-
 function syncVolumeUi(payload: LyricsPayload): void {
   if (!volumeInput || volumeEditing || Date.now() < volumeSyncHoldUntil) {
     return;
@@ -410,26 +389,12 @@ controls?.addEventListener("mouseleave", () => {
   }
 });
 
-for (const element of [dragStrip, controls]) {
-  element?.addEventListener("mouseenter", () => {
-    root.classList.add("toolbar-hover");
-    window.overlayApi.setToolbarHover(true);
-  });
-  element?.addEventListener("mouseleave", () => {
-    root.classList.remove("toolbar-hover");
-    window.overlayApi.setToolbarHover(false);
-  });
-}
-
 async function bootOverlay(): Promise<void> {
   const state = await window.overlayApi.getState();
   applySettings(state.settings);
   renderLyrics(await window.overlayApi.getLatestLyrics());
   window.overlayApi.onSettings(applySettings);
   window.overlayApi.onLyrics(renderLyrics);
-  window.overlayApi.onToolbarHover((hovered) => {
-    root.classList.toggle("toolbar-hover", hovered);
-  });
 }
 
 bootOverlay().catch((error) => {

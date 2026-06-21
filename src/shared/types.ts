@@ -42,7 +42,6 @@ export interface OverlaySettings {
   horizontalPadding: number;
   lineGap: number;
   adjacentScale: number;
-  clickThrough: boolean;
   locked: boolean;
   showAdjacentLines: boolean;
   compactMode: boolean;
@@ -67,7 +66,7 @@ export const defaultSettings: OverlaySettings = {
   opacity: 0.82,
   fontSize: 34,
   width: 920,
-  backgroundBlur: 18,
+  backgroundBlur: 0,
   textShadow: 80,
   backgroundColor: "#101010",
   textColor: "#fffaf3",
@@ -79,7 +78,6 @@ export const defaultSettings: OverlaySettings = {
   horizontalPadding: 28,
   lineGap: 10,
   adjacentScale: 0.62,
-  clickThrough: false,
   locked: false,
   showAdjacentLines: true,
   compactMode: false,

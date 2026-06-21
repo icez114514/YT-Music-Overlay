@@ -19,9 +19,6 @@ declare global {
       updateSettings: (settings: OverlaySettings) => void;
       toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) => void;
       closeSettingsPanel: () => void;
-      setMouseEvents: (ignore: boolean) => void;
-      setToolbarHover: (hovered: boolean) => void;
-      onToolbarHover: (callback: (hovered: boolean) => void) => void;
       musicCommand: (command: string, value?: number) => void;
     };
   }

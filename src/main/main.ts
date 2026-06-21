@@ -46,16 +46,12 @@ const updateReleaseApiUrl = "https://api.github.com/repos/icez114514/YT-Music-Ov
 const updateReleasePageUrl = "https://github.com/icez114514/YT-Music-Overlay/releases/latest";
 const splitOverlayWindowsEnabled = false;
 
-app.disableHardwareAcceleration();
 if (process.env.YTMO_USER_DATA_DIR) {
   app.setPath("userData", process.env.YTMO_USER_DATA_DIR);
 }
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
 app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-gpu-sandbox");
 
 function persist(): void {
   saveState(state);
@@ -65,6 +61,17 @@ function closeAuxiliaryWindows(): void {
   settingsWindow?.close();
   lyricsWindow?.close();
   overlayWindow?.close();
+}
+
+function sendPlayerStatus(message: string): void {
+  if (!playerWindow || playerWindow.isDestroyed() || playerWindow.webContents.isDestroyed()) {
+    return;
+  }
+  try {
+    playerWindow.webContents.send("player:status", message);
+  } catch {
+    // The BrowserView can dispose its frame during navigation or shutdown.
+  }
 }
 
 function createPlayerWindow(): void {
@@ -85,7 +92,7 @@ function createPlayerWindow(): void {
 
   playerWindow.loadFile(rendererPath("player.html"));
   playerWindow.webContents.on("did-finish-load", () => {
-    playerWindow?.webContents.send("player:status", extensionStatus);
+    sendPlayerStatus(extensionStatus);
   });
   playerWindow.on("resize", resizeMusicView);
   playerWindow.on("maximize", resizeMusicView);
@@ -186,11 +193,8 @@ async function checkForUpdates(): Promise<void> {
     if (response.response === 0) {
       await shell.openExternal(latest.html_url ?? updateReleasePageUrl);
     }
-  } catch (error) {
-    playerWindow?.webContents.send(
-      "player:status",
-      `Update check skipped: ${error instanceof Error ? error.message : String(error)}`
-    );
+  } catch {
+    return;
   }
 }
 
@@ -264,8 +268,7 @@ async function expandPlayerPageFromCurrentPlayback(source: string): Promise<void
   }
 
   const result = await openPlayerPageForLyricsOnce(view.webContents, view.getBounds());
-  playerWindow?.webContents.send(
-    "player:status",
+  sendPlayerStatus(
     `Player page expand (${source}): ${result.reason}${result.expanded ? ", expanded" : ""}${result.lyricsClicked ? ", lyrics tab" : ""}`
   );
 }
@@ -312,19 +315,19 @@ function createMusicView(): void {
   });
 
   musicView.webContents.on("did-start-loading", () => {
-    playerWindow?.webContents.send("player:status", `YouTube Music 載入中 · ${extensionStatus}`);
+    sendPlayerStatus(`YouTube Music 載入中 · ${extensionStatus}`);
   });
   musicView.webContents.on("did-stop-loading", () => {
-    playerWindow?.webContents.send("player:status", `請登入、播放歌曲，並切到 Lyrics 分頁 · ${extensionStatus}`);
+    sendPlayerStatus(`請登入、播放歌曲，並切到 Lyrics 分頁 · ${extensionStatus}`);
     scheduleBetterLyricsFallback();
   });
   musicView.webContents.on("did-fail-load", (_event, _code, description) => {
-    playerWindow?.webContents.send("player:status", `載入失敗：${description}`);
+    sendPlayerStatus(`載入失敗：${description}`);
   });
   musicView.webContents.on("console-message", (event) => {
     const message = event.message;
     if (message.includes("BetterLyrics") || message.includes("Better Lyrics")) {
-      playerWindow?.webContents.send("player:status", message);
+      sendPlayerStatus(message);
     }
   });
 
@@ -444,10 +447,7 @@ async function pollLyricsFromMusicView(): Promise<void> {
 
   latestLyricsSignature = signature;
   publishLyricsPayload(payload);
-  playerWindow?.webContents.send(
-    "player:status",
-    `Overlay sync: ${payload.status}, lines=${payload.lines.length}, active=${payload.activeIndex}`
-  );
+  sendPlayerStatus(`Overlay sync: ${payload.status}, lines=${payload.lines.length}, active=${payload.activeIndex}`);
 }
 
 function getLyricsPollingScript(): string {
@@ -699,10 +699,7 @@ function scheduleBetterLyricsFallback(): void {
   betterLyricsFallbackTimer = setTimeout(() => {
     betterLyricsFallbackTimer = null;
     injectBetterLyricsFallback(view).catch((error) => {
-      playerWindow?.webContents.send(
-        "player:status",
-        `Better Lyrics fallback failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      sendPlayerStatus(`Better Lyrics fallback failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, 5000);
 }
@@ -795,7 +792,7 @@ async function injectBetterLyricsFallback(view: BrowserView): Promise<void> {
   await view.webContents.executeJavaScript(earlyInject, true);
   await view.webContents.executeJavaScript(playerIntegrationScript, true);
   await view.webContents.executeJavaScript(betterLyricsScript, true);
-  playerWindow?.webContents.send("player:status", "Better Lyrics fallback injected into YouTube Music.");
+  sendPlayerStatus("Better Lyrics fallback injected into YouTube Music.");
   } finally {
     betterLyricsFallbackInjecting = false;
   }
@@ -856,7 +853,7 @@ function createOverlayWindow(): void {
     lyricsWindow.loadFile(rendererPath("overlay-lyrics.html"));
 
     lyricsWindow.webContents.on("console-message", (event) => {
-      playerWindow?.webContents.send("player:status", `Lyrics overlay console: ${event.message}`);
+      sendPlayerStatus(`Lyrics overlay console: ${event.message}`);
     });
 
     lyricsWindow.webContents.on("did-finish-load", () => {
@@ -902,7 +899,7 @@ function createOverlayWindow(): void {
   overlayWindow.loadFile(rendererPath(splitOverlayWindowsEnabled ? "overlay-toolbar.html" : "overlay.html"));
 
   overlayWindow.webContents.on("console-message", (event) => {
-    playerWindow?.webContents.send("player:status", `Toolbar overlay console: ${event.message}`);
+    sendPlayerStatus(`Overlay console: ${event.message}`);
   });
 
   overlayWindow.webContents.on("did-finish-load", () => {
@@ -1101,15 +1098,6 @@ function wireIpc(): void {
     updateOverlaySettings(settings);
   });
 
-  ipcMain.on("overlay:set-mouse-events", (_event, ignore: boolean) => {
-    void ignore;
-  });
-
-  ipcMain.on("overlay:toolbar-hover", (_event, hovered: boolean) => {
-    overlayWindow?.webContents.send("overlay:toolbar-hover", hovered);
-    lyricsWindow?.webContents.send("overlay:toolbar-hover", hovered);
-  });
-
   ipcMain.on("overlay:toggle-settings-panel", (_event, rect: { x: number; y: number; width: number; height: number }) => {
     toggleSettingsWindow(rect);
   });
@@ -1120,10 +1108,7 @@ function wireIpc(): void {
 
   ipcMain.on("overlay:music-command", (_event, command: string, value?: number) => {
     sendMusicControl(command, value).catch((error) => {
-      playerWindow?.webContents.send(
-        "player:status",
-        `Music control failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      sendPlayerStatus(`Music control failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   });
 
@@ -1132,10 +1117,7 @@ function wireIpc(): void {
       return;
     }
     expandPlayerPageFromCurrentPlayback(`native-${command}`).catch((error) => {
-      playerWindow?.webContents.send(
-        "player:status",
-        `Native player expand failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      sendPlayerStatus(`Native player expand failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   });
 
@@ -1169,11 +1151,6 @@ function wireIpc(): void {
       shell.openPath(app.getPath("userData"));
     }
 
-    if (command === "disable-click-through") {
-      updateOverlaySettings({ ...state.settings, clickThrough: false });
-      overlayWindow?.show();
-      lyricsWindow?.show();
-    }
   });
 }
 
@@ -1184,12 +1161,7 @@ app.whenReady().then(async () => {
   createPlayerWindow();
   createOverlayWindow();
   setTimeout(() => {
-    checkForUpdates().catch((error) => {
-      playerWindow?.webContents.send(
-        "player:status",
-        `Update check skipped: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
+    checkForUpdates().catch(() => undefined);
   }, 2500);
 });
 

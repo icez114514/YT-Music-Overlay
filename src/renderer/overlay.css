@@ -53,12 +53,14 @@ body {
   overflow: hidden;
   background: rgb(var(--background-color) / var(--panel-opacity));
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(var(--blur));
   transition:
     background 160ms ease,
     border-color 160ms ease,
-    box-shadow 160ms ease,
-    backdrop-filter 160ms ease;
+    box-shadow 160ms ease;
+}
+
+.blur-enabled .overlay {
+  backdrop-filter: blur(var(--blur));
 }
 
 .toolbar-window .overlay {
@@ -93,22 +95,14 @@ body {
   border-color: color-mix(in srgb, var(--border-color) 22%, transparent);
   background: rgb(var(--background-color) / var(--panel-opacity));
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(var(--blur));
 }
 
-.hover-background body:has(.drag-strip:hover) .overlay,
-.hover-background body:has(.controls:hover) .overlay,
-.hover-background.toolbar-hover .overlay {
-  border-color: color-mix(in srgb, var(--border-color) 22%, transparent);
-  background: rgb(var(--background-color) / var(--panel-opacity));
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+.blur-enabled.hover-background body:hover .overlay {
   backdrop-filter: blur(var(--blur));
 }
 
 .fully-transparent .overlay,
-.fully-transparent body:hover .overlay,
-.fully-transparent body:has(.drag-strip:hover) .overlay,
-.fully-transparent body:has(.controls:hover) .overlay {
+.fully-transparent body:hover .overlay {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
@@ -531,8 +525,7 @@ body {
 }
 
 .compact-mode .overlay:hover .controls,
-.compact-mode .controls:focus-within,
-.compact-mode.toolbar-hover .controls {
+.compact-mode .controls:focus-within {
   opacity: 1;
   transform: scale(0.74) translateY(0);
 }

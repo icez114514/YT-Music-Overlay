@@ -14,7 +14,6 @@ interface OverlaySettings {
   horizontalPadding: number;
   lineGap: number;
   adjacentScale: number;
-  clickThrough: boolean;
   locked: boolean;
   showAdjacentLines: boolean;
   compactMode: boolean;
@@ -26,7 +25,7 @@ const fallbackSettingsForPanel: OverlaySettings = {
   opacity: 0.82,
   fontSize: 34,
   width: 920,
-  backgroundBlur: 18,
+  backgroundBlur: 0,
   textShadow: 80,
   backgroundColor: "#101010",
   textColor: "#fffaf3",
@@ -38,7 +37,6 @@ const fallbackSettingsForPanel: OverlaySettings = {
   horizontalPadding: 28,
   lineGap: 10,
   adjacentScale: 0.62,
-  clickThrough: false,
   locked: false,
   showAdjacentLines: true,
   compactMode: false,
@@ -66,7 +64,6 @@ const lineGapInput = document.querySelector<HTMLInputElement>("#lineGapInput");
 const adjacentScaleInput = document.querySelector<HTMLInputElement>("#adjacentScaleInput");
 const adjacentInput = document.querySelector<HTMLInputElement>("#adjacentInput");
 const lockedInput = document.querySelector<HTMLInputElement>("#lockedInput");
-const clickInput = document.querySelector<HTMLInputElement>("#clickInput");
 const hoverBackgroundInput = document.querySelector<HTMLInputElement>("#hoverBackgroundInput");
 const chineseInterfaceInput = document.querySelector<HTMLInputElement>("#chineseInterfaceInput");
 
@@ -90,7 +87,6 @@ const translations = {
     horizontalPadding: "Horizontal padding",
     showAdjacent: "Show adjacent lines",
     lockSize: "Lock size",
-    clickThrough: "Click through",
     hoverBackground: "Show background on hover",
     chineseInterface: "中文介面"
   },
@@ -113,7 +109,6 @@ const translations = {
     horizontalPadding: "水平內距",
     showAdjacent: "顯示上下句歌詞",
     lockSize: "鎖定大小",
-    clickThrough: "點擊穿透",
     hoverBackground: "滑鼠移上時顯示背景",
     chineseInterface: "中文介面"
   }
@@ -168,7 +163,6 @@ function applySettingsToPanel(next: Partial<OverlaySettings>): void {
   if (adjacentScaleInput) adjacentScaleInput.value = String(panelSettings.adjacentScale);
   if (adjacentInput) adjacentInput.checked = panelSettings.showAdjacentLines;
   if (lockedInput) lockedInput.checked = panelSettings.locked;
-  if (clickInput) clickInput.checked = panelSettings.clickThrough;
   if (hoverBackgroundInput) hoverBackgroundInput.checked = panelSettings.hideBackgroundUntilHover;
   if (chineseInterfaceInput) chineseInterfaceInput.checked = panelSettings.useChineseInterface;
   applyLanguageToPanel();
@@ -193,7 +187,6 @@ function pushPanelSettings(): void {
     adjacentScale: Number(adjacentScaleInput?.value ?? panelSettings.adjacentScale),
     showAdjacentLines: Boolean(adjacentInput?.checked),
     locked: Boolean(lockedInput?.checked),
-    clickThrough: Boolean(clickInput?.checked),
     hideBackgroundUntilHover: Boolean(hoverBackgroundInput?.checked),
     useChineseInterface: Boolean(chineseInterfaceInput?.checked)
   };
@@ -219,7 +212,6 @@ for (const input of [
   adjacentScaleInput,
   adjacentInput,
   lockedInput,
-  clickInput,
   hoverBackgroundInput,
   chineseInterfaceInput
 ]) {

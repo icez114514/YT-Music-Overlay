@@ -14,10 +14,5 @@ contextBridge.exposeInMainWorld("overlayApi", {
   toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.send("overlay:toggle-settings-panel", rect),
   closeSettingsPanel: () => ipcRenderer.send("overlay:close-settings-panel"),
-  setMouseEvents: (ignore: boolean) => ipcRenderer.send("overlay:set-mouse-events", ignore),
-  setToolbarHover: (hovered: boolean) => ipcRenderer.send("overlay:toolbar-hover", hovered),
-  onToolbarHover: (callback: (hovered: boolean) => void) => {
-    ipcRenderer.on("overlay:toolbar-hover", (_event, hovered: boolean) => callback(hovered));
-  },
   musicCommand: (command: string, value?: number) => ipcRenderer.send("overlay:music-command", command, value)
 });
