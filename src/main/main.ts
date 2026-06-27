@@ -1,7 +1,8 @@
-import { app, BrowserView, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from "electron";
+import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, session, shell } from "electron";
 import type { MessageBoxOptions } from "electron";
+import type { Rectangle } from "electron";
 import { get } from "node:https";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   defaultLyricsPayload,
@@ -20,7 +21,8 @@ let musicView: BrowserView | null = null;
 let overlayWindow: BrowserWindow | null = null;
 let lyricsWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
-let state: PersistedState = loadState();
+let lyricsSearchSettingsWindow: BrowserWindow | null = null;
+let state: PersistedState;
 let latestLyrics: LyricsPayload = defaultLyricsPayload;
 let latestPlayerState: PlayerState = defaultPlayerState;
 let extensionStatus = "Better Lyrics extension is not loaded yet.";
@@ -32,6 +34,19 @@ let latestSettingsAnchor: { x: number; y: number; width: number; height: number 
 let settingsWindowOffset: { x: number; y: number } | null = null;
 let isClosingApp = false;
 let applyingOverlayBounds = false;
+let overlayDragWasResizable = false;
+let overlayDragStartBounds: Rectangle | null = null;
+let overlayDragStartPoint: { x: number; y: number } | null = null;
+let persistTimer: NodeJS.Timeout | null = null;
+
+type RuntimeStoragePaths = {
+  userData: string;
+  sessionData: string;
+  ytmusicPartition: string;
+  diskCache: string;
+  gpuCache: string;
+  legacyMovedSessionData: string;
+};
 
 const rendererPath = (...parts: string[]) => join(__dirname, "..", "renderer", ...parts);
 const preloadPath = (...parts: string[]) => join(__dirname, "..", "preload", ...parts);
@@ -46,23 +61,69 @@ const normalToolbarHeight = 58;
 const compactToolbarHeight = 42;
 const resizeHandleThickness = 8;
 const settingsPanelSize = { width: 560, height: 430 };
+const lyricsSearchSettingsPanelSize = { width: 460, height: 280 };
 const updateReleaseApiUrl = "https://api.github.com/repos/icez114514/YT-Music-Overlay/releases/latest";
 const updateReleasePageUrl = "https://github.com/icez114514/YT-Music-Overlay/releases/latest";
+const betterLyricsExtensionId = "effdbpeggelllpfkjppbokhmmiinhlmg";
+const ytmusicPartition = "persist:yt-music-overlay";
 const splitOverlayWindowsEnabled = false;
+let runtimeStoragePaths: RuntimeStoragePaths;
 
-if (process.env.YTMO_USER_DATA_DIR) {
-  app.setPath("userData", process.env.YTMO_USER_DATA_DIR);
+function readRuntimeStoragePaths(): RuntimeStoragePaths {
+  const userDataPath = app.getPath("userData");
+  return {
+    userData: userDataPath,
+    sessionData: app.getPath("sessionData"),
+    ytmusicPartition: join(userDataPath, "Partitions", "yt-music-overlay"),
+    diskCache: join(userDataPath, "Cache", "Disk"),
+    gpuCache: join(userDataPath, "Cache", "GPU"),
+    legacyMovedSessionData: join(userDataPath, "SessionData")
+  };
+}
+
+function configureRuntimeStorage(): void {
+  if (process.env.YTMO_USER_DATA_DIR) {
+    app.setPath("userData", process.env.YTMO_USER_DATA_DIR);
+  }
+
+  runtimeStoragePaths = readRuntimeStoragePaths();
+  mkdirSync(runtimeStoragePaths.diskCache, { recursive: true });
+  mkdirSync(runtimeStoragePaths.gpuCache, { recursive: true });
+  app.commandLine.appendSwitch("disk-cache-dir", runtimeStoragePaths.diskCache);
+  app.commandLine.appendSwitch("gpu-disk-cache-dir", runtimeStoragePaths.gpuCache);
+}
+
+configureRuntimeStorage();
+state = loadState();
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
 }
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
 app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
 
-function persist(): void {
+function persistNow(): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   saveState(state);
+}
+
+function schedulePersist(delay = 500): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    saveState(state);
+  }, delay);
 }
 
 function closeAuxiliaryWindows(): void {
   settingsWindow?.close();
+  lyricsSearchSettingsWindow?.close();
   lyricsWindow?.close();
   overlayWindow?.close();
 }
@@ -76,6 +137,32 @@ function sendPlayerStatus(message: string): void {
   } catch {
     // The BrowserView can dispose its frame during navigation or shutdown.
   }
+}
+
+function isOverlayVisible(): boolean {
+  return Boolean(overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible());
+}
+
+function publishOverlayVisibility(): void {
+  if (!playerWindow || playerWindow.isDestroyed() || playerWindow.webContents.isDestroyed()) {
+    return;
+  }
+  playerWindow.webContents.send("overlay:visibility", isOverlayVisible());
+}
+
+function setOverlayVisibility(visible: boolean): void {
+  if (visible && (!overlayWindow || overlayWindow.isDestroyed())) {
+    createOverlayWindow();
+  }
+  if (visible) {
+    overlayWindow?.show();
+    lyricsWindow?.show();
+  } else {
+    settingsWindow?.close();
+    overlayWindow?.hide();
+    lyricsWindow?.hide();
+  }
+  publishOverlayVisibility();
 }
 
 function createPlayerWindow(): void {
@@ -101,6 +188,9 @@ function createPlayerWindow(): void {
   playerWindow.on("resize", resizeMusicView);
   playerWindow.on("maximize", resizeMusicView);
   playerWindow.on("unmaximize", resizeMusicView);
+  playerWindow.on("restore", ensureMusicViewVisible);
+  playerWindow.on("show", ensureMusicViewVisible);
+  playerWindow.on("focus", ensureMusicViewVisible);
   createMusicView();
 
   playerWindow.on("closed", () => {
@@ -326,18 +416,334 @@ async function sendMusicControl(command: string, value?: number): Promise<void> 
   }
 }
 
+type LyricsSearchTrackInfo = {
+  title: string;
+  artist: string;
+  album: string;
+  duration: number | null;
+  url: string;
+};
+
+function lyricsSearchTrackInfoScript(): string {
+  return `
+    (() => {
+      const cleanText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const firstText = (selectors) => {
+        for (const selector of selectors) {
+          const text = cleanText(document.querySelector(selector)?.textContent);
+          if (text) return text;
+        }
+        return "";
+      };
+      const subtitle = firstText([
+        "ytmusic-player-bar .subtitle",
+        "ytmusic-player-bar .subtitle yt-formatted-string",
+        ".content-info-wrapper .subtitle"
+      ]);
+      const subtitleParts = subtitle
+        .split(/\\s*[\\u2022\\u00b7]\\s*/)
+        .map(cleanText)
+        .filter(Boolean);
+      const media = document.querySelector("video, audio");
+      const duration = Number(media?.duration);
+      return {
+        title: firstText([
+          "ytmusic-player-bar .title",
+          "ytmusic-player-bar yt-formatted-string.title",
+          ".content-info-wrapper .title",
+          "#blyrics-title",
+          ".blyrics-title"
+        ]),
+        artist: subtitleParts[0] || firstText(["#blyrics-artist", ".blyrics-artist"]),
+        album: firstText(["#blyrics-album", ".blyrics-album"]) || subtitleParts.slice(1).join(" \\u2022 "),
+        duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+        url: location.href
+      };
+    })();
+  `;
+}
+
+function formatTrackDuration(duration: number | null): string {
+  if (duration === null || !Number.isFinite(duration) || duration <= 0) {
+    return "Unknown";
+  }
+  const totalSeconds = Math.round(duration);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")} (${totalSeconds} seconds)`;
+}
+
+async function copyLyricsSearchPrompt(): Promise<{ ok: boolean; title?: string; error?: string }> {
+  const view = musicView;
+  let pageInfo: LyricsSearchTrackInfo | null = null;
+  if (view && !view.webContents.isDestroyed()) {
+    try {
+      pageInfo = await view.webContents.executeJavaScript(lyricsSearchTrackInfoScript(), true) as LyricsSearchTrackInfo;
+    } catch {
+      pageInfo = null;
+    }
+  }
+
+  const title = pageInfo?.title || latestLyrics.title;
+  const artist = pageInfo?.artist || latestLyrics.artist;
+  const album = pageInfo?.album || latestLyrics.album || "";
+  const pageUrl = pageInfo?.url || view?.webContents.getURL() || "";
+  if (!title) {
+    return { ok: false, error: "No active song information is available." };
+  }
+
+  let videoId = "";
+  try {
+    videoId = new URL(pageUrl).searchParams.get("v") || "";
+  } catch {
+    videoId = "";
+  }
+
+  const configuredSites = Array.isArray(state.settings.lyricsSearchSites)
+    ? state.settings.lyricsSearchSites.map((site) => site.trim()).filter(Boolean)
+    : [];
+  const siteList = configuredSites.length > 0
+    ? configuredSites.map((site) => `- ${site}`).join("\n")
+    : "- No preferred sites configured; search other reliable lyrics sources.";
+
+  const prompt = [
+    "請使用網路搜尋工具，為以下歌曲尋找可供程式使用的同步歌詞。不要只依賴模型記憶，也不要自行猜測或生成時間戳。",
+    "",
+    "歌曲資訊：",
+    `- 歌名：${title}`,
+    `- 歌手：${artist || "未知"}`,
+    `- 專輯：${album || "未知"}`,
+    `- YouTube Music URL：${pageUrl || "未知"}`,
+    `- Video ID：${videoId || "未知"}`,
+    `- 歌曲時長：${formatTrackDuration(pageInfo?.duration ?? null)}`,
+    "",
+    "優先搜尋以下網站：",
+    siteList,
+    "",
+    "搜尋要求：",
+    "1. 優先在指定網站內搜尋，可搭配 site: 網域、歌名、歌手、專輯與 Video ID 提高精度。",
+    "2. 尋找 LRC、Enhanced LRC、TTML 或其他含逐行／逐字時間戳的同步歌詞；不要把純文字歌詞誤判為同步歌詞。",
+    "3. 核對歌曲版本、演出者與時長，避免使用同名歌曲、翻唱、現場版、加速版或不同剪輯版本。",
+    "4. 回覆找到的來源網址、歌詞格式與版本核對結果，並保留原始時間戳。",
+    "5. 若指定網站找不到，可搜尋其他可信來源；若仍找不到，請明確說明，不要捏造歌詞或時間軸。"
+  ].join("\n");
+
+  clipboard.writeText(prompt);
+  return { ok: true, title };
+}
+
+function ytmusicDebugSnapshotScript(): string {
+  return `
+    (() => {
+      const cleanText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const isVisible = (element) => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const rectOf = (element) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        };
+      };
+      const firstText = (selectors) => {
+        for (const selector of selectors) {
+          const text = cleanText(document.querySelector(selector)?.textContent);
+          if (text) return text;
+        }
+        return "";
+      };
+      const elementSummary = (element, index) => ({
+        index,
+        tag: element.tagName.toLowerCase(),
+        id: element.id || "",
+        className: String(element.getAttribute("class") || ""),
+        text: cleanText(element.textContent).slice(0, 500),
+        dataTime: element.getAttribute("data-time") || element.querySelector("[data-time]")?.getAttribute("data-time") || "",
+        ariaCurrent: element.getAttribute("aria-current") || "",
+        ariaSelected: element.getAttribute("aria-selected") || "",
+        visible: isVisible(element),
+        rect: rectOf(element)
+      });
+      const containerSelectors = [
+        "#blyrics-wrapper",
+        ".blyrics-wrapper",
+        ".blyrics-container",
+        "ytmusic-lyrics-renderer",
+        "ytmusic-description-shelf-renderer",
+        "ytmusic-tab-renderer[page-type='MUSIC_PAGE_TYPE_TRACK_LYRICS']",
+        "#lyrics"
+      ];
+      const containers = containerSelectors.map((selector) => {
+        const element = document.querySelector(selector);
+        return {
+          selector,
+          found: Boolean(element),
+          visible: isVisible(element),
+          rect: rectOf(element),
+          className: String(element?.getAttribute("class") || ""),
+          textLength: cleanText(element?.textContent).length
+        };
+      });
+      const betterContainer = document.querySelector(".blyrics-container") || document.querySelector("#blyrics-wrapper") || document.querySelector(".blyrics-wrapper");
+      const betterChildren = betterContainer
+        ? Array.from(betterContainer.children).slice(0, 80).map(elementSummary)
+        : [];
+      const activeElements = Array.from(document.querySelectorAll(".blyrics--active, .blyrics--line.blyrics--animating, .blyrics--line.blyrics--pre-animating"))
+        .slice(0, 40)
+        .map(elementSummary);
+      const media = document.querySelector("video, audio");
+      const playPause = document.querySelector("ytmusic-player-bar .play-pause-button, ytmusic-player-bar #play-pause-button");
+      const slider = document.querySelector("ytmusic-player-bar tp-yt-paper-slider#volume-slider, ytmusic-player-bar #volume-slider, ytmusic-player-bar tp-yt-paper-slider");
+      return {
+        capturedAt: new Date().toISOString(),
+        location: {
+          href: location.href,
+          hostname: location.hostname,
+          title: document.title
+        },
+        track: {
+          betterTitle: firstText(["#blyrics-title", ".blyrics-title"]),
+          betterArtist: firstText(["#blyrics-artist", ".blyrics-artist"]),
+          betterAlbum: firstText(["#blyrics-album", ".blyrics-album"]),
+          playerTitle: firstText(["ytmusic-player-bar .title", "ytmusic-player-bar yt-formatted-string.title", ".content-info-wrapper .title"]),
+          playerSubtitle: firstText(["ytmusic-player-bar .subtitle", "ytmusic-player-bar .subtitle yt-formatted-string", ".content-info-wrapper .subtitle"])
+        },
+        playback: {
+          mediaFound: Boolean(media),
+          currentTime: media && Number.isFinite(media.currentTime) ? media.currentTime : null,
+          duration: media && Number.isFinite(media.duration) ? media.duration : null,
+          paused: media ? media.paused : null,
+          ended: media ? media.ended : null,
+          volume: media ? media.volume : null,
+          muted: media ? media.muted : null,
+          playPauseTitle: playPause?.getAttribute("title") || "",
+          playPauseAriaLabel: playPause?.getAttribute("aria-label") || "",
+          sliderValue: slider?.getAttribute("aria-valuenow") || slider?.getAttribute("value") || ""
+        },
+        containers,
+        betterLyrics: {
+          wrapperFound: Boolean(document.querySelector("#blyrics-wrapper, .blyrics-wrapper")),
+          containerFound: Boolean(document.querySelector(".blyrics-container")),
+          childCount: betterContainer?.children.length || 0,
+          activeElementCount: activeElements.length,
+          children: betterChildren,
+          activeElements
+        },
+        ytmusicLyricsTextSample: cleanText(document.querySelector("ytmusic-lyrics-renderer")?.textContent).slice(0, 2000)
+      };
+    })();
+  `;
+}
+
+async function readYtMusicDebugSnapshot(): Promise<unknown> {
+  const view = musicView;
+  if (!view || view.webContents.isDestroyed()) {
+    return { error: "musicView is not available" };
+  }
+
+  try {
+    return await view.webContents.executeJavaScript(ytmusicDebugSnapshotScript(), true);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function exportDebugState(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const outputDir = join(process.env.YTMO_DEBUG_DIR || app.getAppPath(), "debug-exports");
+  const outputPath = join(outputDir, `yt-music-overlay-debug-${timestamp}.json`);
+
+  const snapshot = {
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    app: {
+      name: app.getName(),
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      platform: process.platform,
+      arch: process.arch,
+      packaged: app.isPackaged,
+      extensionStatus,
+      storage: {
+        ...runtimeStoragePaths,
+        actualSessionData: app.getPath("sessionData")
+      }
+    },
+    windows: {
+      player: playerWindow ? { destroyed: playerWindow.isDestroyed(), bounds: playerWindow.getBounds() } : null,
+      overlay: overlayWindow ? { destroyed: overlayWindow.isDestroyed(), bounds: overlayWindow.getBounds() } : null,
+      settings: settingsWindow ? { destroyed: settingsWindow.isDestroyed(), bounds: settingsWindow.getBounds() } : null,
+      musicView: musicView ? { url: musicView.webContents.getURL(), bounds: musicView.getBounds() } : null
+    },
+    state,
+    latestLyrics,
+    latestPlayerState,
+    latestLyricsSignature,
+    ytmusic: await readYtMusicDebugSnapshot()
+  };
+
+  try {
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(outputPath, JSON.stringify(snapshot, null, 2), "utf8");
+    return { ok: true, path: outputPath };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function parseUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
+function isEmbeddedAppUrl(url: string): boolean {
+  const parsed = parseUrl(url);
+  return (
+    parsed?.protocol === "https:" &&
+    (parsed.hostname === "music.youtube.com" || parsed.hostname === "accounts.google.com")
+  );
+}
+
+function isBetterLyricsExtensionUrl(url: string): boolean {
+  const parsed = parseUrl(url);
+  return parsed?.protocol === "chrome-extension:" && parsed.hostname === betterLyricsExtensionId;
+}
+
+function openExternalUrl(url: string): void {
+  const parsed = parseUrl(url);
+  if (!parsed || !["https:", "http:", "mailto:"].includes(parsed.protocol)) {
+    return;
+  }
+
+  void shell.openExternal(parsed.toString()).catch((error) => {
+    sendPlayerStatus(`Unable to open external link: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
 function createMusicView(): void {
   if (!playerWindow) {
     return;
   }
 
-  const ytmSession = session.fromPartition("persist:yt-music-overlay");
+  const ytmSession = session.fromPartition(ytmusicPartition);
   musicView = new BrowserView({
     webPreferences: {
       preload: preloadPath("ytmusic-preload.js"),
-      partition: "persist:yt-music-overlay",
+      partition: ytmusicPartition,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
   musicView.webContents.setMaxListeners(30);
@@ -346,11 +752,52 @@ function createMusicView(): void {
   resizeMusicView();
 
   musicView.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://music.youtube.com") || url.startsWith("https://accounts.google.com")) {
+    if (isEmbeddedAppUrl(url)) {
       return { action: "allow" };
     }
-    shell.openExternal(url);
+
+    if (isBetterLyricsExtensionUrl(url)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          width: 1100,
+          height: 760,
+          minWidth: 720,
+          minHeight: 520,
+          autoHideMenuBar: true,
+          backgroundColor: "#121212",
+          webPreferences: {
+            partition: ytmusicPartition,
+            contextIsolation: true,
+            nodeIntegration: false
+          }
+        }
+      };
+    }
+
+    openExternalUrl(url);
     return { action: "deny" };
+  });
+  musicView.webContents.on("did-create-window", (window, details) => {
+    if (!isBetterLyricsExtensionUrl(details.url)) {
+      return;
+    }
+
+    window.setMenuBarVisibility(false);
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (isBetterLyricsExtensionUrl(url)) {
+        return { action: "allow" };
+      }
+      openExternalUrl(url);
+      return { action: "deny" };
+    });
+    window.webContents.on("will-navigate", (event, url) => {
+      if (isBetterLyricsExtensionUrl(url)) {
+        return;
+      }
+      event.preventDefault();
+      openExternalUrl(url);
+    });
   });
 
   musicView.webContents.on("did-start-loading", () => {
@@ -362,6 +809,15 @@ function createMusicView(): void {
   });
   musicView.webContents.on("did-fail-load", (_event, _code, description) => {
     sendPlayerStatus(`載入失敗：${description}`);
+  });
+  musicView.webContents.on("render-process-gone", (_event, details) => {
+    const url = musicView?.webContents.getURL() || "https://music.youtube.com";
+    sendPlayerStatus(`YouTube Music renderer restarted: ${details.reason}`);
+    recreateMusicView(url);
+  });
+  musicView.webContents.on("unresponsive", () => {
+    sendPlayerStatus("YouTube Music became unresponsive. Reloading page.");
+    musicView?.webContents.reload();
   });
   musicView.webContents.on("console-message", (event) => {
     const message = event.message;
@@ -878,7 +1334,57 @@ function resizeMusicView(): void {
   }
 
   const [width, height] = playerWindow.getContentSize();
-  musicView.setBounds({ x: 0, y: 64, width, height: Math.max(0, height - 64) });
+  if (playerWindow.isMinimized() || width <= 0 || height <= 64) {
+    return;
+  }
+
+  musicView.setBounds({ x: 0, y: 64, width, height: Math.max(1, height - 64) });
+}
+
+function ensureMusicViewVisible(): void {
+  if (!playerWindow || playerWindow.isDestroyed()) {
+    return;
+  }
+
+  if (!musicView || musicView.webContents.isDestroyed()) {
+    createMusicView();
+    return;
+  }
+
+  if (!playerWindow.getBrowserViews().includes(musicView)) {
+    playerWindow.setBrowserView(musicView);
+  }
+  resizeMusicView();
+}
+
+function recreateMusicView(url = "https://music.youtube.com"): void {
+  if (!playerWindow || playerWindow.isDestroyed() || isClosingApp) {
+    return;
+  }
+
+  stopLyricsPolling();
+  if (musicView && !musicView.webContents.isDestroyed()) {
+    playerWindow.removeBrowserView(musicView);
+  }
+  musicView = null;
+  createMusicView();
+  const nextView = musicView as BrowserView | null;
+  if (url.startsWith("https://music.youtube.com") || url.startsWith("https://accounts.google.com")) {
+    nextView?.webContents.loadURL(url);
+  }
+}
+
+function focusExistingInstance(): void {
+  if (!playerWindow || playerWindow.isDestroyed()) {
+    return;
+  }
+
+  if (playerWindow.isMinimized()) {
+    playerWindow.restore();
+  }
+  playerWindow.show();
+  playerWindow.focus();
+  ensureMusicViewVisible();
 }
 
 async function loadBetterLyricsExtension(): Promise<void> {
@@ -981,6 +1487,8 @@ function createOverlayWindow(): void {
     overlayWindow?.webContents.send("lyrics:update", latestLyrics);
   });
 
+  overlayWindow.on("show", publishOverlayVisibility);
+  overlayWindow.on("hide", publishOverlayVisibility);
   overlayWindow.on("move", rememberOverlayBounds);
   overlayWindow.on("moved", rememberOverlayBounds);
   overlayWindow.on("resize", rememberOverlayBounds);
@@ -989,11 +1497,13 @@ function createOverlayWindow(): void {
   });
   overlayWindow.on("close", () => {
     rememberOverlayBounds();
+    persistNow();
     lyricsWindow?.close();
   });
   overlayWindow.on("closed", () => {
     settingsWindow?.close();
     overlayWindow = null;
+    publishOverlayVisibility();
   });
 }
 
@@ -1074,6 +1584,87 @@ function positionSettingsWindow(): void {
   });
 }
 
+function lyricsSearchSettingsPosition(anchor: { x: number; y: number; width: number; height: number }): { x: number; y: number } {
+  if (!playerWindow || playerWindow.isDestroyed()) {
+    return { x: 0, y: 0 };
+  }
+  const contentBounds = playerWindow.getContentBounds();
+  const desiredX = contentBounds.x + anchor.x + anchor.width - lyricsSearchSettingsPanelSize.width;
+  const desiredY = contentBounds.y + anchor.y + anchor.height + 8;
+  return {
+    x: Math.round(Math.max(contentBounds.x + 8, Math.min(desiredX, contentBounds.x + contentBounds.width - lyricsSearchSettingsPanelSize.width - 8))),
+    y: Math.round(Math.max(contentBounds.y + 8, Math.min(desiredY, contentBounds.y + contentBounds.height - lyricsSearchSettingsPanelSize.height - 8)))
+  };
+}
+
+function toggleLyricsSearchSettingsWindow(anchor: { x: number; y: number; width: number; height: number }): void {
+  if (!playerWindow || playerWindow.isDestroyed()) {
+    return;
+  }
+  if (lyricsSearchSettingsWindow && !lyricsSearchSettingsWindow.isDestroyed()) {
+    lyricsSearchSettingsWindow.close();
+    return;
+  }
+
+  const position = lyricsSearchSettingsPosition(anchor);
+  lyricsSearchSettingsWindow = new BrowserWindow({
+    parent: playerWindow,
+    x: position.x,
+    y: position.y,
+    width: lyricsSearchSettingsPanelSize.width,
+    height: lyricsSearchSettingsPanelSize.height,
+    minWidth: lyricsSearchSettingsPanelSize.width,
+    minHeight: lyricsSearchSettingsPanelSize.height,
+    maxWidth: lyricsSearchSettingsPanelSize.width,
+    maxHeight: lyricsSearchSettingsPanelSize.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    title: "Lyrics Search Settings",
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: preloadPath("player-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  lyricsSearchSettingsWindow.setMenuBarVisibility(false);
+  lyricsSearchSettingsWindow.loadFile(rendererPath("lyrics-search-settings.html"));
+  lyricsSearchSettingsWindow.once("ready-to-show", () => {
+    lyricsSearchSettingsWindow?.show();
+    lyricsSearchSettingsWindow?.focus();
+  });
+  lyricsSearchSettingsWindow.on("closed", () => {
+    lyricsSearchSettingsWindow = null;
+  });
+}
+
+function updateLyricsSearchSites(sites: unknown): { ok: boolean } {
+  const normalizedSites = Array.isArray(sites)
+    ? [...new Set(sites
+      .filter((site): site is string => typeof site === "string")
+      .map((site) => site.trim())
+      .filter(Boolean)
+      .map((site) => site.slice(0, 500)))]
+      .slice(0, 50)
+    : [];
+
+  state.settings = {
+    ...state.settings,
+    lyricsSearchSites: normalizedSites
+  };
+  playerWindow?.webContents.send("overlay:settings", state.settings);
+  settingsWindow?.webContents.send("overlay:settings", state.settings);
+  overlayWindow?.webContents.send("overlay:settings", state.settings);
+  lyricsWindow?.webContents.send("overlay:settings", state.settings);
+  schedulePersist();
+  return { ok: true };
+}
+
 function rememberOverlayBounds(): void {
   if (!overlayWindow) {
     return;
@@ -1098,7 +1689,7 @@ function rememberOverlayBounds(): void {
     lyricsWindow.setBounds(bounds);
   }
   positionSettingsWindow();
-  persist();
+  schedulePersist();
 }
 
 function applyOverlayModeMinSize(compactMode: boolean): void {
@@ -1156,7 +1747,7 @@ function updateOverlaySettings(settings: OverlaySettings): void {
   lyricsWindow?.webContents.send("overlay:settings", settings);
   settingsWindow?.webContents.send("overlay:settings", settings);
   playerWindow?.webContents.send("overlay:settings", settings);
-  persist();
+  schedulePersist();
 }
 
 function wireIpc(): void {
@@ -1164,7 +1755,19 @@ function wireIpc(): void {
   ipcMain.handle("app:get-state", () => state);
   ipcMain.handle("app:get-latest-lyrics", () => latestLyrics);
   ipcMain.handle("app:get-latest-player-state", () => latestPlayerState);
+  ipcMain.handle("app:get-overlay-visibility", () => isOverlayVisible());
   ipcMain.handle("app:get-extension-status", () => extensionStatus);
+  ipcMain.handle("app:export-debug-state", () => exportDebugState());
+  ipcMain.handle("app:copy-lyrics-search-prompt", () => copyLyricsSearchPrompt());
+  ipcMain.handle("app:update-lyrics-search-sites", (_event, sites: unknown) => updateLyricsSearchSites(sites));
+
+  ipcMain.on("app:toggle-lyrics-search-settings", (_event, rect: { x: number; y: number; width: number; height: number }) => {
+    toggleLyricsSearchSettingsWindow(rect);
+  });
+
+  ipcMain.on("app:close-lyrics-search-settings", () => {
+    lyricsSearchSettingsWindow?.close();
+  });
 
   ipcMain.on("ytmusic:lyrics", (_event, payload: LyricsPayload) => {
     latestLyricsSignature = lyricsSignature(payload);
@@ -1188,6 +1791,60 @@ function wireIpc(): void {
 
   ipcMain.on("overlay:close-settings-panel", () => {
     settingsWindow?.close();
+  });
+
+  ipcMain.on("overlay:hide", () => {
+    setOverlayVisibility(false);
+  });
+
+  ipcMain.on("overlay:toolbar-hover", (_event, hovered: boolean) => {
+    void hovered;
+  });
+
+  ipcMain.on("overlay:drag-start", (_event, point: { x: number; y: number }) => {
+    if (!overlayWindow || overlayWindow.isDestroyed() || state.settings.locked) {
+      return;
+    }
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+
+    overlayDragWasResizable = overlayWindow.isResizable();
+    overlayWindow.setResizable(false);
+    overlayDragStartBounds = overlayWindow.getBounds();
+    overlayDragStartPoint = { x, y };
+  });
+
+  ipcMain.on("overlay:drag-to", (_event, point: { x: number; y: number }) => {
+    if (!overlayWindow || overlayWindow.isDestroyed() || state.settings.locked || !overlayDragStartBounds || !overlayDragStartPoint) {
+      return;
+    }
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+
+    overlayWindow.setBounds({
+      x: Math.round(overlayDragStartBounds.x + x - overlayDragStartPoint.x),
+      y: Math.round(overlayDragStartBounds.y + y - overlayDragStartPoint.y),
+      width: overlayDragStartBounds.width,
+      height: overlayDragStartBounds.height
+    });
+    positionSettingsWindow();
+  });
+
+  ipcMain.on("overlay:drag-end", () => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      return;
+    }
+    overlayWindow.setResizable(overlayDragWasResizable && !state.settings.locked);
+    overlayDragStartBounds = null;
+    overlayDragStartPoint = null;
+    rememberOverlayBounds();
+    persistNow();
   });
 
   ipcMain.on("overlay:music-command", (_event, command: string, value?: number) => {
@@ -1219,16 +1876,11 @@ function wireIpc(): void {
     }
 
     if (command === "show-overlay") {
-      if (!overlayWindow) {
-        createOverlayWindow();
-      }
-      overlayWindow?.show();
-      lyricsWindow?.show();
+      setOverlayVisibility(true);
     }
 
     if (command === "hide-overlay") {
-      overlayWindow?.hide();
-      lyricsWindow?.hide();
+      setOverlayVisibility(false);
     }
 
     if (command === "open-user-data") {
@@ -1238,7 +1890,15 @@ function wireIpc(): void {
   });
 }
 
+app.on("second-instance", () => {
+  focusExistingInstance();
+});
+
 app.whenReady().then(async () => {
+  if (!singleInstanceLock) {
+    return;
+  }
+
   app.setAppUserModelId("local.yt-music-overlay");
   wireIpc();
   await loadBetterLyricsExtension();
@@ -1265,4 +1925,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  persistNow();
 });

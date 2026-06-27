@@ -4,6 +4,7 @@ export type LyricsStatus =
   | "not-youtube-music"
   | "not-playing"
   | "lyrics-closed"
+  | "loading-lyrics"
   | "no-lyrics"
   | "static-lyrics";
 
@@ -55,6 +56,7 @@ export interface OverlaySettings {
   compactMode: boolean;
   hideBackgroundUntilHover: boolean;
   useChineseInterface: boolean;
+  lyricsSearchSites: string[];
 }
 
 export interface OverlayBounds {
@@ -90,7 +92,12 @@ export const defaultSettings: OverlaySettings = {
   showAdjacentLines: true,
   compactMode: false,
   hideBackgroundUntilHover: false,
-  useChineseInterface: false
+  useChineseInterface: false,
+  lyricsSearchSites: [
+    "https://lrclib.net",
+    "https://www.musixmatch.com",
+    "https://genius.com"
+  ]
 };
 
 export const defaultLyricsPayload: LyricsPayload = {

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lyrics Search Settings</title>
+    <link rel="stylesheet" href="./lyrics-search-settings.css" />
+  </head>
+  <body>
+    <form id="lyricsSearchSettingsForm" class="settings-panel">
+      <header>
+        <div>
+          <strong data-i18n="title">Lyrics search sites</strong>
+          <small data-i18n="description">Add one website per line. These sites will be included in the Codex prompt.</small>
+        </div>
+        <button id="closeButton" class="icon-button" type="button" title="Close" data-i18n-title="close">x</button>
+      </header>
+
+      <textarea id="sitesInput" rows="7" spellcheck="false" placeholder="https://example.com" aria-label="Lyrics search sites"></textarea>
+
+      <footer>
+        <span id="siteCount">0 sites</span>
+        <div class="actions">
+          <button id="cancelButton" type="button" data-i18n="cancel">Cancel</button>
+          <button id="saveButton" class="primary" type="submit" data-i18n="save">Save</button>
+        </div>
+      </footer>
+    </form>
+    <script src="./lyrics-search-settings.js"></script>
+  </body>
+</html>

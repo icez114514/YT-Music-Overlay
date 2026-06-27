@@ -4,6 +4,7 @@ type LyricsStatus =
   | "not-youtube-music"
   | "not-playing"
   | "lyrics-closed"
+  | "loading-lyrics"
   | "no-lyrics"
   | "static-lyrics";
 
@@ -54,6 +55,7 @@ interface OverlaySettings {
   compactMode: boolean;
   hideBackgroundUntilHover: boolean;
   useChineseInterface: boolean;
+  lyricsSearchSites: string[];
 }
 
 const fallbackSettings: OverlaySettings = {
@@ -76,7 +78,12 @@ const fallbackSettings: OverlaySettings = {
   showAdjacentLines: true,
   compactMode: false,
   hideBackgroundUntilHover: false,
-  useChineseInterface: false
+  useChineseInterface: false,
+  lyricsSearchSites: [
+    "https://lrclib.net",
+    "https://www.musixmatch.com",
+    "https://genius.com"
+  ]
 };
 
 let settings: OverlaySettings = { ...fallbackSettings };
@@ -85,6 +92,7 @@ let latestPlayerState: PlayerState = { isPlaying: false, volume: 0.8, muted: fal
 let lastRenderedSignature = "";
 let volumeSyncHoldUntil = 0;
 let volumeEditing = false;
+let overlayDragging = false;
 
 const root = document.documentElement;
 const trackTitle = document.querySelector<HTMLElement>("#trackTitle");
@@ -92,6 +100,7 @@ const trackArtist = document.querySelector<HTMLElement>("#trackArtist");
 const lyrics = document.querySelector<HTMLElement>("#lyrics");
 const settingsToggle = document.querySelector<HTMLButtonElement>("#settingsToggle");
 const compactToggle = document.querySelector<HTMLButtonElement>("#compactToggle");
+const hideOverlayButton = document.querySelector<HTMLButtonElement>("#hideOverlayButton");
 const previousButton = document.querySelector<HTMLButtonElement>("#previousButton");
 const playPauseButton = document.querySelector<HTMLButtonElement>("#playPauseButton");
 const nextButton = document.querySelector<HTMLButtonElement>("#nextButton");
@@ -108,6 +117,7 @@ const overlayLabels = {
     notYoutubeMusic: "Not on YouTube Music",
     notPlaying: "Not playing",
     lyricsClosed: "Open the Lyrics tab",
+    loadingLyrics: "Waiting for lyrics",
     noLyrics: "No visible lyrics",
     staticLyrics: "Static lyrics",
     synced: "Synced",
@@ -119,25 +129,28 @@ const overlayLabels = {
     previous: "Previous track",
     playPause: "Play / Pause",
     next: "Next track",
-    volume: "Volume"
+    volume: "Volume",
+    hideOverlay: "Hide overlay"
   },
   zh: {
-    waiting: "等待 YouTube Music",
-    notYoutubeMusic: "目前不是 YouTube Music",
-    notPlaying: "尚未播放",
-    lyricsClosed: "請開啟歌詞分頁",
-    noLyrics: "沒有可見歌詞",
-    staticLyrics: "靜態歌詞",
-    synced: "同步中",
-    noVisibleLyrics: "沒有可見歌詞。",
-    failedStart: "Overlay 啟動失敗。",
-    compact: "精簡模式",
-    exitCompact: "離開精簡模式",
-    settings: "設定",
-    previous: "上一首",
-    playPause: "播放 / 暫停",
-    next: "下一首",
-    volume: "音量"
+    waiting: "\u7b49\u5f85 YouTube Music",
+    notYoutubeMusic: "\u76ee\u524d\u4e0d\u662f YouTube Music",
+    notPlaying: "\u5c1a\u672a\u64ad\u653e",
+    lyricsClosed: "\u8acb\u958b\u555f\u6b4c\u8a5e\u5206\u9801",
+    loadingLyrics: "\u7b49\u5f85\u6b4c\u8a5e\u66f4\u65b0",
+    noLyrics: "\u6c92\u6709\u53ef\u898b\u6b4c\u8a5e",
+    staticLyrics: "\u975c\u614b\u6b4c\u8a5e",
+    synced: "\u540c\u6b65\u4e2d",
+    noVisibleLyrics: "\u6c92\u6709\u53ef\u898b\u6b4c\u8a5e\u3002",
+    failedStart: "Overlay \u555f\u52d5\u5931\u6557\u3002",
+    compact: "\u7cbe\u7c21\u6a21\u5f0f",
+    exitCompact: "\u96e2\u958b\u7cbe\u7c21\u6a21\u5f0f",
+    settings: "\u8a2d\u5b9a",
+    previous: "\u4e0a\u4e00\u9996",
+    playPause: "\u64ad\u653e / \u66ab\u505c",
+    next: "\u4e0b\u4e00\u9996",
+    volume: "\u97f3\u91cf",
+    hideOverlay: "\u96b1\u85cf Overlay"
   }
 } as const;
 
@@ -186,6 +199,7 @@ function applySettings(next: Partial<OverlaySettings>): void {
   setButtonLabel(previousButton, label("previous"));
   setButtonLabel(playPauseButton, label("playPause"));
   setButtonLabel(nextButton, label("next"));
+  setButtonLabel(hideOverlayButton, label("hideOverlay"));
   document.querySelector<HTMLElement>(".volume-control")?.setAttribute("title", label("volume"));
 
   if (latestPayload) {
@@ -213,7 +227,7 @@ function visibleLineIndices(payload: LyricsPayload): number[] {
 }
 
 function isInstrumentalPayload(payload: LyricsPayload): boolean {
-  return payload.lines.length === 1 && /^[♪♫♬]+$/.test(payload.lines[0]?.text.trim() ?? "");
+  return payload.lines.length === 1 && /^(?:[\u266a\u266b\u266c]+)$/.test(payload.lines[0]?.text.trim() ?? "");
 }
 
 function renderSignature(payload: LyricsPayload): string {
@@ -236,7 +250,7 @@ function renderSignature(payload: LyricsPayload): string {
 
 function trackDetail(payload: LyricsPayload): string {
   const parts = [payload.artist, payload.album].map((part) => (part ?? "").trim()).filter(Boolean);
-  return parts.length > 0 ? parts.join(" • ") : statusLabel(payload);
+  return parts.length > 0 ? parts.join(" \u2022 ") : statusLabel(payload);
 }
 
 function renderLyrics(payload: LyricsPayload, force = false): void {
@@ -302,6 +316,7 @@ function statusLabel(payload: LyricsPayload): string {
     "not-youtube-music": label("notYoutubeMusic"),
     "not-playing": label("notPlaying"),
     "lyrics-closed": label("lyricsClosed"),
+    "loading-lyrics": label("loadingLyrics"),
     "no-lyrics": label("noLyrics"),
     "static-lyrics": label("staticLyrics"),
     ready: label("synced")
@@ -349,6 +364,7 @@ compactToggle?.addEventListener("click", () => {
 previousButton?.addEventListener("click", () => window.overlayApi.musicCommand("previous"));
 playPauseButton?.addEventListener("click", () => window.overlayApi.musicCommand("play-pause"));
 nextButton?.addEventListener("click", () => window.overlayApi.musicCommand("next"));
+hideOverlayButton?.addEventListener("click", () => window.overlayApi.hideOverlay());
 
 volumeInput?.addEventListener("input", () => {
   const nextVolume = Number(volumeInput.value);
@@ -402,6 +418,55 @@ controls?.addEventListener("mouseleave", () => {
     active.blur();
   }
 });
+
+dragStrip?.addEventListener("pointerenter", () => {
+  root.classList.add("toolbar-hover");
+  window.overlayApi.setOverlayToolbarHover(true);
+});
+
+dragStrip?.addEventListener("pointerleave", () => {
+  root.classList.remove("toolbar-hover");
+  if (!overlayDragging) {
+    window.overlayApi.setOverlayToolbarHover(false);
+  }
+});
+
+dragStrip?.addEventListener("pointerdown", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, label, .controls")) {
+    return;
+  }
+
+  event.preventDefault();
+  overlayDragging = true;
+  dragStrip.setPointerCapture(event.pointerId);
+  root.classList.add("toolbar-hover");
+  window.overlayApi.startOverlayDrag({ x: event.screenX, y: event.screenY });
+});
+
+dragStrip?.addEventListener("pointermove", (event) => {
+  if (!overlayDragging) {
+    return;
+  }
+
+  window.overlayApi.dragOverlayTo({ x: event.screenX, y: event.screenY });
+});
+
+function stopOverlayDrag(event?: PointerEvent): void {
+  if (event && dragStrip?.hasPointerCapture(event.pointerId)) {
+    dragStrip.releasePointerCapture(event.pointerId);
+  }
+  if (overlayDragging) {
+    window.overlayApi.endOverlayDrag();
+  }
+  overlayDragging = false;
+  if (!dragStrip?.matches(":hover")) {
+    window.overlayApi.setOverlayToolbarHover(false);
+  }
+}
+
+dragStrip?.addEventListener("pointerup", stopOverlayDrag);
+dragStrip?.addEventListener("pointercancel", stopOverlayDrag);
 
 async function bootOverlay(): Promise<void> {
   const state = await window.overlayApi.getState();

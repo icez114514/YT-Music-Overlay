@@ -18,5 +18,10 @@ contextBridge.exposeInMainWorld("overlayApi", {
   toggleSettingsPanel: (rect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.send("overlay:toggle-settings-panel", rect),
   closeSettingsPanel: () => ipcRenderer.send("overlay:close-settings-panel"),
+  hideOverlay: () => ipcRenderer.send("overlay:hide"),
+  setOverlayToolbarHover: (hovered: boolean) => ipcRenderer.send("overlay:toolbar-hover", hovered),
+  startOverlayDrag: (point: { x: number; y: number }) => ipcRenderer.send("overlay:drag-start", point),
+  dragOverlayTo: (point: { x: number; y: number }) => ipcRenderer.send("overlay:drag-to", point),
+  endOverlayDrag: () => ipcRenderer.send("overlay:drag-end"),
   musicCommand: (command: string, value?: number) => ipcRenderer.send("overlay:music-command", command, value)
 });

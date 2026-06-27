@@ -19,6 +19,7 @@ interface OverlaySettings {
   compactMode: boolean;
   hideBackgroundUntilHover: boolean;
   useChineseInterface: boolean;
+  lyricsSearchSites: string[];
 }
 
 const fallbackSettingsForPanel: OverlaySettings = {
@@ -41,7 +42,12 @@ const fallbackSettingsForPanel: OverlaySettings = {
   showAdjacentLines: true,
   compactMode: false,
   hideBackgroundUntilHover: false,
-  useChineseInterface: false
+  useChineseInterface: false,
+  lyricsSearchSites: [
+    "https://lrclib.net",
+    "https://www.musixmatch.com",
+    "https://genius.com"
+  ]
 };
 
 let panelSettings: OverlaySettings = { ...fallbackSettingsForPanel };

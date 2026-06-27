@@ -12,6 +12,9 @@ const ACTIVE_LINE_HINTS = [
 
 let lastSignature = "";
 let lastPlayerStateSignature = "";
+let lastTrackKey = "";
+let trackSettlingUntil = 0;
+let trackLoadingUntil = 0;
 let publishTimer: number | null = null;
 let playerStateTimer: number | null = null;
 
@@ -56,29 +59,13 @@ function currentMediaTime(): number {
   return media && Number.isFinite(media.currentTime) ? media.currentTime : 0;
 }
 
-function applyTimedActiveLine(lines: LyricLine[]): boolean {
-  if (!lines.some((line) => typeof line.time === "number")) {
-    return false;
-  }
+function isBeforeFirstTimedLine(lines: LyricLine[]): boolean {
+  const firstTime = lines
+    .map((line) => line.time)
+    .filter((time): time is number => typeof time === "number")
+    .sort((left, right) => left - right)[0];
 
-  const now = currentMediaTime();
-  let activeIndex = -1;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const lineTime = lines[index]?.time;
-    if (typeof lineTime === "number" && lineTime <= now + 0.05) {
-      activeIndex = index;
-      break;
-    }
-  }
-
-  if (activeIndex < 0) {
-    return false;
-  }
-
-  lines.forEach((line, index) => {
-    line.active = index === activeIndex;
-  });
-  return true;
+  return typeof firstTime === "number" && currentMediaTime() + 0.05 < firstTime;
 }
 
 function extractBetterLyricsText(element: Element): string {
@@ -132,11 +119,123 @@ function firstText(selectors: string[]): string {
   return "";
 }
 
+function normalizeTrackText(value: string): string {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "");
+}
+
+function sameTrackText(left: string, right: string): boolean {
+  const normalizedLeft = normalizeTrackText(left);
+  const normalizedRight = normalizeTrackText(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+
+  const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
+  const longer = normalizedLeft.length > normalizedRight.length ? normalizedLeft : normalizedRight;
+  return shorter.length >= 6 && longer.includes(shorter);
+}
+
+function titleContainsTrackText(left: string, right: string): boolean {
+  const normalizedLeft = normalizeTrackText(left);
+  const normalizedRight = normalizeTrackText(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
+  const longer = normalizedLeft.length > normalizedRight.length ? normalizedLeft : normalizedRight;
+  return longer.includes(shorter);
+}
+
 function splitSubtitle(value: string): string[] {
   return cleanText(value)
-    .split(/\s*[•·]\s*/)
+    .split(/\s*[\u2022\u00b7]\s*/)
     .map((part) => cleanText(part))
     .filter(Boolean);
+}
+
+function readTrackInfo(): {
+  title: string;
+  artist: string;
+  album: string;
+  betterTitle: string;
+  playerTitle: string;
+  betterArtist: string;
+  playerArtist: string;
+} {
+  const betterTitle = firstText(["#blyrics-title", ".blyrics-title"]);
+  const playerTitle = firstText([
+    "ytmusic-player-bar .title",
+    "ytmusic-player-bar yt-formatted-string.title",
+    ".content-info-wrapper .title"
+  ]);
+  const subtitle = firstText([
+    "ytmusic-player-bar .subtitle",
+    "ytmusic-player-bar .subtitle yt-formatted-string",
+    ".content-info-wrapper .subtitle"
+  ]);
+  const subtitleParts = splitSubtitle(subtitle);
+  const betterArtist = firstText(["#blyrics-artist", ".blyrics-artist"]);
+  const betterAlbum = firstText(["#blyrics-album", ".blyrics-album"]);
+
+  return {
+    title: playerTitle || betterTitle,
+    artist: subtitleParts[0] || betterArtist,
+    album: subtitleParts.slice(1).join(" \u2022 ") || betterAlbum,
+    betterTitle,
+    playerTitle,
+    betterArtist,
+    playerArtist: subtitleParts[0] || ""
+  };
+}
+
+function isBetterLyricsTrackStale(
+  container: Element | null,
+  track: { betterTitle: string; playerTitle: string; betterArtist: string; playerArtist: string }
+): boolean {
+  const hasBetterLyrics = Boolean(container?.matches(".blyrics-container") || container?.querySelector(".blyrics-container"));
+  if (!hasBetterLyrics || !track.playerTitle || !track.betterTitle) {
+    return false;
+  }
+
+  if (titleContainsTrackText(track.betterTitle, track.playerTitle)) {
+    return false;
+  }
+
+  return true;
+}
+
+function trackKey(track: { title: string; artist: string }): string {
+  return `${track.title}\n${track.artist}`
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "");
+}
+
+function updateTrackSettlingWindow(track: { title: string; artist: string }): boolean {
+  const key = trackKey(track);
+  if (!key) {
+    return false;
+  }
+
+  if (key !== lastTrackKey) {
+    lastTrackKey = key;
+    lastSignature = "";
+    trackSettlingUntil = Date.now() + 3000;
+    trackLoadingUntil = Date.now() + 12000;
+    return true;
+  }
+
+  return Date.now() < trackSettlingUntil;
+}
+
+function isTrackLoadingWindow(track: { title: string }): boolean {
+  return Boolean(track.title) && Date.now() < trackLoadingUntil;
 }
 
 function isVisible(element: Element): boolean {
@@ -257,8 +356,7 @@ function collectBetterLyricsLines(container: Element): LyricLine[] {
     });
   }
 
-  const hasTimedActiveLine = applyTimedActiveLine(lines);
-  if (hasTimedActiveLine || lines.some((line) => line.active)) {
+  if (lines.some((line) => line.active)) {
     return lines;
   }
 
@@ -448,58 +546,62 @@ function collectPayload(): LyricsPayload {
     return makePayload("not-youtube-music", [], -1, "This page is not YouTube Music.");
   }
 
+  const track = readTrackInfo();
   const isPlaying = getPlaybackState();
-  const title = firstText([
-    "#blyrics-title",
-    ".blyrics-title",
-    "ytmusic-player-bar .title",
-    "ytmusic-player-bar yt-formatted-string.title",
-    ".content-info-wrapper .title"
-  ]);
   const container = findLyricsContainer();
-  const lines = collectLyricLines(container);
+  updateTrackSettlingWindow(track);
+  const staleBetterLyrics = isBetterLyricsTrackStale(container, track);
+  const lines = staleBetterLyrics ? [] : collectLyricLines(container);
   const activeIndex = lines.findIndex((line) => line.active);
+  const hasVisibleLines = lines.length > 0;
+  const beforeFirstTimedLine = !staleBetterLyrics && activeIndex < 0 && isBeforeFirstTimedLine(lines);
+  const loadingTimedOut = Boolean(track.title) && Date.now() > trackLoadingUntil;
+  const shouldHoldLyrics = !loadingTimedOut && (
+    staleBetterLyrics ||
+    (!hasVisibleLines && isTrackLoadingWindow(track))
+  );
   let status: LyricsStatus = "ready";
   let message = "";
+  let outputLines = shouldHoldLyrics ? [] : lines;
+  let outputActiveIndex = shouldHoldLyrics ? -1 : activeIndex;
 
-  if (!isPlaying && !title) {
+  if (beforeFirstTimedLine && !shouldHoldLyrics) {
+    outputLines = [{ text: "\u266a", active: true }];
+    outputActiveIndex = 0;
+  }
+
+  if (!isPlaying && !track.title) {
     status = "not-playing";
     message = "Play a song in YouTube Music.";
+  } else if (shouldHoldLyrics) {
+    status = "loading-lyrics";
+    message = "Waiting for Better Lyrics to update.";
   } else if (!container) {
     status = "lyrics-closed";
     message = "Open the Lyrics tab in YouTube Music.";
-  } else if (lines.length === 0) {
+  } else if (outputLines.length === 0) {
     status = "no-lyrics";
     message = "No lyrics are visible for this song.";
-  } else if (activeIndex < 0) {
+  } else if (outputActiveIndex < 0) {
     status = "static-lyrics";
     message = "Lyrics are visible, but no synced line is highlighted.";
   }
 
-  return makePayload(status, lines, activeIndex, message);
+  return makePayload(status, outputLines, outputActiveIndex, message, track);
 }
 
-function makePayload(status: LyricsStatus, lines: LyricLine[], activeIndex: number, message: string): LyricsPayload {
-  const subtitle = firstText([
-    "ytmusic-player-bar .subtitle",
-    "ytmusic-player-bar .subtitle yt-formatted-string",
-    ".content-info-wrapper .subtitle"
-  ]);
-  const subtitleParts = splitSubtitle(subtitle);
-  const artist = firstText(["#blyrics-artist", ".blyrics-artist"]) || subtitleParts[0] || "";
-  const album = firstText(["#blyrics-album", ".blyrics-album"]) || subtitleParts.slice(1).join(" • ");
-
+function makePayload(
+  status: LyricsStatus,
+  lines: LyricLine[],
+  activeIndex: number,
+  message: string,
+  track = readTrackInfo()
+): LyricsPayload {
   return {
     status,
-    title: firstText([
-      "#blyrics-title",
-      ".blyrics-title",
-      "ytmusic-player-bar .title",
-      "ytmusic-player-bar yt-formatted-string.title",
-      ".content-info-wrapper .title"
-    ]),
-    artist,
-    album,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
     isPlaying: getPlaybackState(),
     volume: 0.8,
     muted: false,
@@ -548,6 +650,7 @@ window.addEventListener("DOMContentLoaded", () => {
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
+    characterData: true,
     attributes: true,
     attributeFilter: ["class", "aria-current", "aria-selected", "title", "aria-label"]
   });

@@ -91,18 +91,21 @@ body {
   backdrop-filter: none;
 }
 
-.hover-background body:hover .overlay {
+.hover-background body:hover .overlay,
+.hover-background.toolbar-hover .overlay {
   border-color: color-mix(in srgb, var(--border-color) 22%, transparent);
   background: rgb(var(--background-color) / var(--panel-opacity));
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
 }
 
-.blur-enabled.hover-background body:hover .overlay {
+.blur-enabled.hover-background body:hover .overlay,
+.blur-enabled.hover-background.toolbar-hover .overlay {
   backdrop-filter: blur(var(--blur));
 }
 
 .fully-transparent .overlay,
-.fully-transparent body:hover .overlay {
+.fully-transparent body:hover .overlay,
+.fully-transparent.toolbar-hover .overlay {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
@@ -116,7 +119,8 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px 4px 14px;
-  -webkit-app-region: drag;
+  cursor: move;
+  -webkit-app-region: no-drag;
 }
 
 .controls {
@@ -168,6 +172,37 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.close-overlay-icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.close-overlay-icon::before,
+.close-overlay-icon::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 1px;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.close-overlay-icon::before {
+  transform: rotate(45deg);
+}
+
+.close-overlay-icon::after {
+  transform: rotate(-45deg);
+}
+
+.close-overlay-button:hover {
+  color: var(--accent-color);
+}
+
 .compact-icon {
   position: relative;
   width: 16px;
@@ -194,6 +229,7 @@ body {
     linear-gradient(currentColor, currentColor) 4px 4px / 6px 2px no-repeat,
     linear-gradient(currentColor, currentColor) 4px 8px / 8px 2px no-repeat;
 }
+
 
 .icon-button:hover {
   border-color: color-mix(in srgb, var(--accent-color) 42%, transparent);
